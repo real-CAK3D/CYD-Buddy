@@ -8,7 +8,7 @@ This is the real battery-only direction: the XIAO ESP32S3 Sense uses its onboard
 
 - Read the XIAO Sense PDM microphone on GPIO 41/42.
 - Feed 16 kHz, 16-bit mono audio into Espressif ESP-SR AFE.
-- Use WakeNet for wake-word detection.
+- Use WakeNet for wake-word detection. The current built-in wake phrase is `Jarvis`; a true `Buddy` wake word will require a custom WakeNet model later.
 - Use MultiNet for offline command recognition.
 - Print recognized commands as serial events:
 
@@ -30,14 +30,17 @@ Recommended setup:
 git clone --recursive https://github.com/espressif/esp-skainet.git C:\esp\esp-skainet
 ```
 
-Install the ESP-IDF version recommended by the ESP-Skainet repo, then from an ESP-IDF PowerShell:
+Install ESP-IDF v5.0.x, then from an ESP-IDF PowerShell:
 
 ```powershell
-cd "C:\Users\CAK3D\OneDrive\Documents\ChatGPT\CYD ESP32\XIAO-S3-Sense-Voice-ESP-IDF"
-idf.py set-target esp32s3
-idf.py build
-idf.py -p COM7 flash monitor
+cd "C:\Users\CAK3D\OneDrive\Documents\ChatGPT\CYD ESP32"
+powershell -ExecutionPolicy Bypass -File tools\setup_xiao_voice_idf.ps1 -Port COM7
+powershell -ExecutionPolicy Bypass -File tools\setup_xiao_voice_idf.ps1 -Port COM7 -Flash
 ```
+
+The helper script stages this project into `C:\esp\cyd-buddy-idf` before building.
+ESP-SR 2.0.5 has linker flags that break when the project path contains spaces,
+so do not build this target directly from the OneDrive `CYD ESP32` folder.
 
 ## Status
 

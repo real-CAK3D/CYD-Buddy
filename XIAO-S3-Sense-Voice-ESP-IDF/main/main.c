@@ -44,26 +44,26 @@ typedef struct {
 } command_event_t;
 
 static const command_event_t COMMAND_EVENTS[] = {
-    {1, "take_picture", "TAKE A PICTURE"},
-    {2, "look_around", "LOOK AROUND"},
-    {3, "what_do_you_see", "WHAT DO YOU SEE"},
-    {4, "tell_joke", "TELL ME A JOKE"},
-    {5, "say_something_rude", "SAY SOMETHING RUDE"},
-    {6, "be_nice", "BE NICE"},
-    {7, "be_sarcastic", "BE SARCASTIC"},
-    {8, "be_quiet", "BE QUIET"},
-    {9, "talk_more", "TALK MORE"},
-    {10, "wake_up", "WAKE UP"},
-    {11, "go_to_sleep", "GO TO SLEEP"},
-    {12, "happy_mode", "HAPPY MODE"},
-    {13, "sad_mode", "SAD MODE"},
-    {14, "angry_mode", "ANGRY MODE"},
-    {15, "suspicious_mode", "SUSPICIOUS MODE"},
-    {16, "love_mode", "LOVE MODE"},
-    {17, "remember_me", "REMEMBER ME"},
-    {18, "forget_me", "FORGET ME"},
-    {19, "connect_wifi", "CONNECT WIFI"},
-    {20, "status", "STATUS"},
+    {1, "take_picture", "take picture"},
+    {2, "look_around", "look around"},
+    {3, "what_do_you_see", "describe view"},
+    {4, "tell_joke", "tell joke"},
+    {5, "say_something_rude", "be rude"},
+    {6, "be_nice", "be nice"},
+    {7, "be_sarcastic", "be sarcastic"},
+    {8, "be_quiet", "be quiet"},
+    {9, "talk_more", "talk more"},
+    {10, "wake_up", "wake up"},
+    {11, "go_to_sleep", "sleep"},
+    {12, "happy_mode", "fun mode"},
+    {13, "sad_mode", "sad mode"},
+    {14, "angry_mode", "get mad"},
+    {15, "suspicious_mode", "suspicious mode"},
+    {16, "love_mode", "love mode"},
+    {17, "remember_me", "remember me"},
+    {18, "forget_me", "forget me"},
+    {19, "connect_wifi", "connect wifi"},
+    {20, "status", "status"},
 };
 
 static const char *event_for_command(int command_id)
@@ -76,24 +76,50 @@ static const char *event_for_command(int command_id)
     return "unknown";
 }
 
-static void register_buddy_commands(void)
+static bool register_buddy_commands(void)
 {
-    ESP_ERROR_CHECK(esp_mn_commands_clear());
+    esp_err_t err = esp_mn_commands_clear();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "voice command clear failed: %s", esp_err_to_name(err));
+        printf("event voice:error command_clear_failed\n");
+        return false;
+    }
+
+    int accepted = 0;
     for (size_t i = 0; i < sizeof(COMMAND_EVENTS) / sizeof(COMMAND_EVENTS[0]); i++) {
         ESP_LOGI(TAG, "voice cmd %d: %s -> %s",
                  COMMAND_EVENTS[i].command_id,
                  COMMAND_EVENTS[i].phrase,
                  COMMAND_EVENTS[i].event_name);
-        ESP_ERROR_CHECK(esp_mn_commands_add(
+        err = esp_mn_commands_add(
             COMMAND_EVENTS[i].command_id,
-            (char *)COMMAND_EVENTS[i].phrase));
+            (char *)COMMAND_EVENTS[i].phrase);
+        if (err == ESP_OK) {
+            accepted++;
+        } else {
+            ESP_LOGW(TAG, "voice cmd rejected: id=%d phrase=\"%s\" err=%s",
+                     COMMAND_EVENTS[i].command_id,
+                     COMMAND_EVENTS[i].phrase,
+                     esp_err_to_name(err));
+        }
     }
+
+    if (accepted == 0) {
+        ESP_LOGE(TAG, "No valid voice commands were accepted by MultiNet");
+        printf("event voice:error no_valid_commands\n");
+        return false;
+    }
+
     esp_mn_error_t *command_errors = esp_mn_commands_update();
     if (command_errors) {
         ESP_LOGW(TAG, "Some voice commands were rejected by MultiNet");
     }
     esp_mn_commands_print();
     esp_mn_active_commands_print();
+    ESP_LOGI(TAG, "voice commands accepted: %d/%d",
+             accepted,
+             (int)(sizeof(COMMAND_EVENTS) / sizeof(COMMAND_EVENTS[0])));
+    return true;
 }
 
 static esp_err_t init_pdm_mic(void)
@@ -179,7 +205,10 @@ static void detect_task(void *arg)
     ESP_LOGI(TAG, "afe_chunksize=%d mn_chunksize=%d", afe_chunksize, mn_chunksize);
     assert(mn_chunksize == afe_chunksize);
 
-    register_buddy_commands();
+    if (!register_buddy_commands()) {
+        vTaskDelete(NULL);
+        return;
+    }
     multinet->print_active_speech_commands(model_data);
 
     printf("event voice:boot\n");
