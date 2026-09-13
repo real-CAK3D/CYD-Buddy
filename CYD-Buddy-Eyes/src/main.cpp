@@ -98,7 +98,7 @@ int touchStartX = 0;
 int touchStartY = 0;
 int touchMoveMax = 0;
 String serialLine;
-String bleEventLine;
+char bleEventBuffer[121] = {0};
 float breath = 0.0f;
 
 bool blinkActive = false;
@@ -129,9 +129,10 @@ unsigned long lastBleScanMs = 0;
 unsigned long lastBleEventMs = 0;
 bool bleReady = false;
 bool bleConnected = false;
-bool bleEventReady = false;
+volatile bool bleEventReady = false;
 bool bleDisconnected = false;
 bool senseStreamEvents = true;
+bool senseAutoConnect = false;
 BLEAdvertisedDevice* senseDevice = nullptr;
 BLEClient* senseClient = nullptr;
 BLERemoteCharacteristic* senseEventChar = nullptr;
@@ -469,23 +470,29 @@ class SenseClientCallbacks : public BLEClientCallbacks {
 
 void onSenseNotify(BLERemoteCharacteristic*, uint8_t* data, size_t length, bool) {
   if (length == 0) return;
-  String line;
-  for (size_t i = 0; i < length && i < 120; i++) line += (char)data[i];
-  line.trim();
-  if (line.length() == 0) return;
-  bleEventLine = line;
+  size_t copyLen = min(length, sizeof(bleEventBuffer) - 1);
+  memcpy(bleEventBuffer, data, copyLen);
+  bleEventBuffer[copyLen] = '\0';
   bleEventReady = true;
   lastBleEventMs = millis();
 }
 
 bool sendSenseCommand(String command) {
   command.trim();
+  if (command == "connect") {
+    senseAutoConnect = true;
+    lastBleScanMs = 0;
+    statusLine = "xiao scan";
+    speechLine = "Scanning for XIAO Sense.";
+    speechScroll = 0;
+    return true;
+  }
   if (!bleConnected || !senseCommandChar || command.length() == 0) {
     speechLine = "XIAO Sense is not connected yet.";
     speechScroll = 0;
     return false;
   }
-  senseCommandChar->writeValue((uint8_t*)command.c_str(), command.length(), true);
+  senseCommandChar->writeValue((uint8_t*)command.c_str(), command.length(), false);
   statusLine = "xiao command";
   speechLine = "Sent to XIAO: " + command;
   speechScroll = 0;
@@ -560,18 +567,20 @@ void updateSenseBle() {
     speechLine = "I lost the XIAO Sense link. Scanning again.";
     speechScroll = 0;
     lastBleScanMs = 0;
+    senseAutoConnect = true;
   }
 
-  if (!bleConnected && now - lastBleScanMs > 7000) {
+  if (senseAutoConnect && !bleConnected && now - lastBleScanMs > 7000) {
     lastBleScanMs = now;
     statusLine = "xiao scan";
-    BLEDevice::getScan()->start(3, false);
+    BLEDevice::getScan()->start(2, false);
   }
   if (!bleConnected && senseDevice) connectSenseBle();
 
   if (bleEventReady) {
-    String line = bleEventLine;
     bleEventReady = false;
+    String line = String(bleEventBuffer);
+    line.trim();
     if (line.startsWith("event ")) {
       handleSerialLine(line);
     }
@@ -1434,7 +1443,10 @@ void handleMenuItem(int item) {
   } else if (menuMode == MENU_SYSTEM_XIAO) {
     if (item == 0) {
       speechLine = bleConnected ? "XIAO Sense is connected over BLE." : "Scanning for XIAO Sense over BLE.";
-      if (!bleConnected) lastBleScanMs = 0;
+      if (!bleConnected) {
+        senseAutoConnect = true;
+        lastBleScanMs = 0;
+      }
     } else if (item == 1) {
       sendSenseCommand("capture");
     } else if (item == 2) {

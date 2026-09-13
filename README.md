@@ -185,6 +185,7 @@ When both boards are powered from a power bank, they can work without NukeBox or
   - `event vision:busy`
 - CYD maps those events into moods and phrases locally.
 - CYD can also send settings back to XIAO over BLE:
+  - `connect`
   - `capture`
   - `threshold <level>`
   - `stream on`
@@ -208,6 +209,7 @@ wifi status
 time sync
 ollama host <url>
 xiao <command>
+xiao connect
 remember me as <name>
 ```
 
