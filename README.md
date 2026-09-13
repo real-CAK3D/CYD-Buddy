@@ -82,3 +82,44 @@ Color names include `black`, `navy`, `blue`, `sky`, `cyan`, `teal`, `green`, `li
 - Add an on-screen phrase editor/keyboard.
 - Add the XIAO ESP32S3 Sense as a camera/mic sensor node.
 - Bridge sensor events and local Gemma output into the CYD over serial, Wi-Fi, BLE, or a local host bridge.
+
+## XIAO S3 Sense Bridge
+
+- Firmware: `XIAO-S3-Sense-Bridge`
+- Board: Seeed Studio XIAO ESP32S3 Sense
+- Current role: USB serial sensor node for camera/mic events.
+
+```powershell
+cd "XIAO-S3-Sense-Bridge"
+$env:PLATFORMIO_CORE_DIR='..\CYD-Buddy-Eyes\.pio-core'
+python -m platformio run
+python -m platformio run -t upload --upload-port COM7
+```
+
+If the ESP32-S3 compiler fails on Windows with `CreateProcess: No such file or directory`, build from a short temp path:
+
+```powershell
+$proj="$env:TEMP\xiao"
+$core="$env:TEMP\piocorex"
+Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $proj | Out-Null
+Copy-Item -Path ".\XIAO-S3-Sense-Bridge\*" -Destination $proj -Recurse -Force
+cd $proj
+$env:PLATFORMIO_CORE_DIR=$core
+python -m platformio run -j 1
+python -m platformio run -t upload --upload-port COM7 -j 1
+```
+
+Serial commands:
+
+```text
+status
+init
+capture
+stream on
+stream off
+threshold 900
+help
+```
+
+The bridge prints `BUDDY event ...` lines that can be relayed into the CYD firmware later.
