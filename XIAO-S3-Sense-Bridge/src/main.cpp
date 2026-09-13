@@ -2,6 +2,9 @@
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
 #include "driver/i2s.h"
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
 
 // Seeed XIAO ESP32S3 Sense B2B camera pins.
 static const int CAM_PWDN = -1;
@@ -28,15 +31,40 @@ static const i2s_port_t MIC_PORT = I2S_NUM_0;
 
 static const int LED_PIN = 21; // active-low user LED on XIAO ESP32S3
 static const int SAMPLE_COUNT = 512;
+static const char* BLE_NAME = "CYD-Sense";
+static BLEUUID BUDDY_SERVICE_UUID("7a2f0001-44b8-4f2a-9c4f-c0d000000001");
+static BLEUUID BUDDY_EVENT_UUID("7a2f0002-44b8-4f2a-9c4f-c0d000000002");
 
 bool cameraReady = false;
 bool micReady = false;
 bool streamEvents = true;
 bool sensorInitAttempted = false;
+bool bleClientConnected = false;
+bool bleNeedsAdvertising = false;
 unsigned long lastSensorMs = 0;
 unsigned long lastHeartbeatMs = 0;
+unsigned long lastVisionMs = 0;
+unsigned long lastBleAdvertiseMs = 0;
+unsigned long lastBleNotifyMs = 0;
 int loudThreshold = 900;
 int quietThreshold = 80;
+int lastFrameBytes = 0;
+int stableQuietCount = 0;
+BLEServer* buddyServer = nullptr;
+BLECharacteristic* eventCharacteristic = nullptr;
+
+class BuddyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* server) override {
+    bleClientConnected = true;
+    Serial.println("ble=connected");
+  }
+
+  void onDisconnect(BLEServer* server) override {
+    bleClientConnected = false;
+    bleNeedsAdvertising = true;
+    Serial.println("ble=disconnected");
+  }
+};
 
 void led(bool on) {
   pinMode(LED_PIN, OUTPUT);
@@ -54,6 +82,45 @@ void printJsonStatus(const char* kind, int level = -1, int width = 0, int height
                 (unsigned)bytes,
                 (unsigned)ESP.getFreeHeap(),
                 (unsigned)ESP.getFreePsram());
+}
+
+void publishBuddyEvent(const String& eventLine) {
+  String line = eventLine;
+  line.trim();
+  if (!line.startsWith("event ")) line = "event " + line;
+
+  if (streamEvents) {
+    Serial.print("BUDDY ");
+    Serial.println(line);
+  }
+
+  if (eventCharacteristic && bleClientConnected && millis() - lastBleNotifyMs > 150) {
+    String bleLine = line;
+    if (bleLine.startsWith("event sound:loud")) bleLine = "event sound:loud";
+    eventCharacteristic->setValue((uint8_t*)bleLine.c_str(), bleLine.length());
+    eventCharacteristic->notify();
+    lastBleNotifyMs = millis();
+  }
+}
+
+void beginBle() {
+  BLEDevice::init(BLE_NAME);
+  buddyServer = BLEDevice::createServer();
+  buddyServer->setCallbacks(new BuddyServerCallbacks());
+  BLEService* service = buddyServer->createService(BUDDY_SERVICE_UUID);
+  eventCharacteristic = service->createCharacteristic(
+      BUDDY_EVENT_UUID,
+      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  eventCharacteristic->setValue("event hello");
+  service->start();
+  BLEAdvertising* advertising = BLEDevice::getAdvertising();
+  advertising->addServiceUUID(BUDDY_SERVICE_UUID);
+  advertising->setScanResponse(true);
+  advertising->setMinPreferred(0x06);
+  advertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  lastBleAdvertiseMs = millis();
+  Serial.println("ble=advertising name=CYD-Sense");
 }
 
 bool initCamera() {
@@ -168,8 +235,32 @@ void captureFrame() {
   }
 
   printJsonStatus("camera_frame", -1, fb->width, fb->height, fb->len);
-  if (streamEvents) Serial.println("BUDDY event face");
+  publishBuddyEvent("event face");
   esp_camera_fb_return(fb);
+}
+
+void captureTinyVisionEvent() {
+  if (!cameraReady) return;
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) return;
+
+  int bytes = fb->len;
+  int delta = lastFrameBytes == 0 ? 0 : abs(bytes - lastFrameBytes);
+  lastFrameBytes = bytes;
+  int width = fb->width;
+  int height = fb->height;
+  esp_camera_fb_return(fb);
+
+  printJsonStatus("tiny_vision", -1, width, height, bytes);
+  if (delta > 850) {
+    publishBuddyEvent("event vision:motion");
+  } else if (bytes < 2300) {
+    publishBuddyEvent("event vision:dark");
+  } else if (bytes > 7000) {
+    publishBuddyEvent("event vision:busy");
+  } else if (random(0, 5) == 0) {
+    publishBuddyEvent("event face");
+  }
 }
 
 void initSensors() {
@@ -185,6 +276,7 @@ void initSensors() {
   micReady = initMic();
   Serial.printf("mic=%s\n", micReady ? "ready" : "missing");
   printJsonStatus("init");
+  publishBuddyEvent("event hello");
 }
 
 void handleCommand(String line) {
@@ -240,8 +332,10 @@ void setup() {
   delay(500);
   Serial.println("XIAO S3 Sense bridge alive");
   Serial.printf("psram=%s free_psram=%u free_heap=%u\n", psramFound() ? "yes" : "no", (unsigned)ESP.getFreePsram(), (unsigned)ESP.getFreeHeap());
+  beginBle();
   printJsonStatus("boot");
   Serial.println("commands: status, init, capture, stream on, stream off, threshold <level>, help");
+  initSensors();
   led(false);
 }
 
@@ -259,14 +353,28 @@ void loop() {
     int level = readMicLevel();
     if (level >= 0) {
       if (streamEvents && level > loudThreshold) {
-        Serial.printf("BUDDY event sound:loud level=%d\n", level);
-      } else if (streamEvents && level < quietThreshold && random(0, 120) == 0) {
-        Serial.println("BUDDY event sound:quiet");
+        publishBuddyEvent(String("event sound:loud level=") + level);
+      } else if (level < quietThreshold) {
+        stableQuietCount++;
+        if (stableQuietCount > 28 && random(0, 80) == 0) publishBuddyEvent("event sound:quiet");
+      } else {
+        stableQuietCount = 0;
       }
       if (now - lastHeartbeatMs > 2000) {
         printJsonStatus("mic", level);
         lastHeartbeatMs = now;
       }
     }
+  }
+
+  if (sensorInitAttempted && cameraReady && now - lastVisionMs > 9000) {
+    lastVisionMs = now;
+    captureTinyVisionEvent();
+  }
+
+  if ((!bleClientConnected && now - lastBleAdvertiseMs > 10000) || bleNeedsAdvertising) {
+    bleNeedsAdvertising = false;
+    lastBleAdvertiseMs = now;
+    BLEDevice::startAdvertising();
   }
 }

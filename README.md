@@ -169,6 +169,24 @@ Good future onboard model targets:
 
 The XIAO and CYD are good for tiny classifiers and reflex behavior. They are not practical targets for a full Gemma-style LLM; that stays on NukeBox/Ollama or OpenAI.
 
+## Portable Offline Mode
+
+When both boards are powered from a power bank, they can work without NukeBox or Wi-Fi:
+
+- XIAO advertises over BLE as `CYD-Sense`.
+- CYD scans for that BLE service and subscribes to sensor events.
+- XIAO initializes its camera/mic automatically on boot.
+- XIAO sends tiny/reflex events such as:
+  - `event sound:loud level=...`
+  - `event sound:quiet`
+  - `event face`
+  - `event vision:motion`
+  - `event vision:dark`
+  - `event vision:busy`
+- CYD maps those events into moods and phrases locally.
+
+This is the first tiny-AI layer. It is not a full LLM on-device; it is an offline reflex/classifier layer that makes the buddy portable. Rich chat, weather, online info, and longer reasoning still use Ollama/OpenAI when a relay is available.
+
 ## MimiClaw Reference
 
 Local reference file found:

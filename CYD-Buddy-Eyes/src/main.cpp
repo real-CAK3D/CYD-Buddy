@@ -6,6 +6,7 @@
 #include <FS.h>
 #include <SD.h>
 #include <math.h>
+#include <BLEDevice.h>
 
 static const int DEFAULT_ROTATION = 2;
 static int displayRotation = DEFAULT_ROTATION;
@@ -42,6 +43,8 @@ TFT_eSprite frame(&tft);
 Preferences prefs;
 bool frameOk = false;
 bool sdReady = false;
+static BLEUUID SENSE_SERVICE_UUID("7a2f0001-44b8-4f2a-9c4f-c0d000000001");
+static BLEUUID SENSE_EVENT_UUID("7a2f0002-44b8-4f2a-9c4f-c0d000000002");
 
 enum Mood {
   MOOD_NORMAL,
@@ -92,6 +95,7 @@ int touchStartX = 0;
 int touchStartY = 0;
 int touchMoveMax = 0;
 String serialLine;
+String bleEventLine;
 float breath = 0.0f;
 
 bool blinkActive = false;
@@ -118,6 +122,17 @@ unsigned long buddyEyePokeCount = 0;
 unsigned long buddyTickleCount = 0;
 unsigned long buddyBoredCount = 0;
 unsigned long lastMemorySaveMs = 0;
+unsigned long lastBleScanMs = 0;
+unsigned long lastBleEventMs = 0;
+bool bleReady = false;
+bool bleConnected = false;
+bool bleEventReady = false;
+bool bleDisconnected = false;
+BLEAdvertisedDevice* senseDevice = nullptr;
+BLEClient* senseClient = nullptr;
+BLERemoteCharacteristic* senseEventChar = nullptr;
+
+void handleSerialLine(String line);
 
 String lastEvent = "idle";
 String statusLine = "tap mood, hold rotate";
@@ -334,6 +349,118 @@ void markInteraction() {
 
 void setBacklight(uint8_t value) {
   analogWrite(BACKLIGHT_PIN, value);
+}
+
+class SenseAdvertisedCallbacks : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SENSE_SERVICE_UUID)) {
+      if (senseDevice) delete senseDevice;
+      senseDevice = new BLEAdvertisedDevice(advertisedDevice);
+      BLEDevice::getScan()->stop();
+    }
+  }
+};
+
+class SenseClientCallbacks : public BLEClientCallbacks {
+  void onConnect(BLEClient*) override {
+    bleConnected = true;
+  }
+
+  void onDisconnect(BLEClient*) override {
+    bleConnected = false;
+    bleDisconnected = true;
+    senseEventChar = nullptr;
+  }
+};
+
+void onSenseNotify(BLERemoteCharacteristic*, uint8_t* data, size_t length, bool) {
+  if (length == 0) return;
+  String line;
+  for (size_t i = 0; i < length && i < 120; i++) line += (char)data[i];
+  line.trim();
+  if (line.length() == 0) return;
+  bleEventLine = line;
+  bleEventReady = true;
+  lastBleEventMs = millis();
+}
+
+void beginSenseBle() {
+  if (bleReady) return;
+  BLEDevice::init("CYD-Buddy");
+  BLEScan* scan = BLEDevice::getScan();
+  scan->setAdvertisedDeviceCallbacks(new SenseAdvertisedCallbacks());
+  scan->setInterval(1349);
+  scan->setWindow(449);
+  scan->setActiveScan(true);
+  bleReady = true;
+}
+
+bool connectSenseBle() {
+  if (!senseDevice) return false;
+  if (senseClient) {
+    delete senseClient;
+    senseClient = nullptr;
+  }
+  senseClient = BLEDevice::createClient();
+  senseClient->setClientCallbacks(new SenseClientCallbacks());
+  if (!senseClient->connect(senseDevice)) {
+    delete senseDevice;
+    senseDevice = nullptr;
+    return false;
+  }
+
+  BLERemoteService* service = senseClient->getService(SENSE_SERVICE_UUID);
+  if (!service) {
+    senseClient->disconnect();
+    delete senseDevice;
+    senseDevice = nullptr;
+    return false;
+  }
+
+  senseEventChar = service->getCharacteristic(SENSE_EVENT_UUID);
+  if (!senseEventChar) {
+    senseClient->disconnect();
+    delete senseDevice;
+    senseDevice = nullptr;
+    return false;
+  }
+
+  if (senseEventChar->canNotify()) senseEventChar->registerForNotify(onSenseNotify);
+  bleConnected = true;
+  statusLine = "xiao ble connected";
+  speechLine = "XIAO Sense connected. I have portable eyes and ears.";
+  speechScroll = 0;
+  delete senseDevice;
+  senseDevice = nullptr;
+  return true;
+}
+
+void updateSenseBle() {
+  beginSenseBle();
+  unsigned long now = millis();
+
+  if (bleDisconnected) {
+    bleDisconnected = false;
+    statusLine = "xiao ble lost";
+    speechLine = "I lost the XIAO Sense link. Scanning again.";
+    speechScroll = 0;
+    lastBleScanMs = 0;
+  }
+
+  if (!bleConnected && now - lastBleScanMs > 7000) {
+    lastBleScanMs = now;
+    statusLine = "xiao scan";
+    BLEDevice::getScan()->start(3, false);
+  }
+  if (!bleConnected && senseDevice) connectSenseBle();
+
+  if (bleEventReady) {
+    String line = bleEventLine;
+    bleEventReady = false;
+    if (line.startsWith("event ")) {
+      handleSerialLine(line);
+    }
+  }
 }
 
 String csvEscape(String value) {
@@ -881,7 +1008,21 @@ void applyEvent(String event) {
   lastEvent = event;
   lastMoodAuto = millis();
 
-  if (event.indexOf("face") >= 0 || event.indexOf("person") >= 0 || event.indexOf("motion") >= 0) {
+  if (event.indexOf("vision:dark") >= 0) {
+    currentMood = MOOD_SLEEPY;
+    statusLine = "vision: dark";
+    speechLine = "It got dark. I am switching to dramatic night mode.";
+    startBlink(false);
+  } else if (event.indexOf("vision:busy") >= 0) {
+    currentMood = MOOD_EXCITED;
+    statusLine = "vision: busy";
+    speechLine = "There is a lot happening out there.";
+  } else if (event.indexOf("vision:motion") >= 0) {
+    currentMood = MOOD_SURPRISED;
+    statusLine = "vision: motion";
+    speechLine = "Something moved. I saw that.";
+    startBlink(false);
+  } else if (event.indexOf("face") >= 0 || event.indexOf("person") >= 0 || event.indexOf("motion") >= 0) {
     currentMood = MOOD_SURPRISED;
     statusLine = "vision: " + event;
     speechLine = "I see something.";
@@ -1163,11 +1304,12 @@ void handleMenuItem(int item) {
     else if (item == 3) openMenu(MENU_SYSTEM_PHRASES);
   } else if (menuMode == MENU_SYSTEM_XIAO) {
     if (item == 0) {
-      speechLine = "Plug in the XIAO Sense when you are ready.";
+      speechLine = bleConnected ? "XIAO Sense is connected over BLE." : "Scanning for XIAO Sense over BLE.";
+      if (!bleConnected) lastBleScanMs = 0;
     } else if (item == 1) {
       speechLine = "XIAO will send face, motion, sound, and vision events.";
     } else if (item == 2) {
-      speechLine = "Bluetooth events are planned after the sensor firmware.";
+      speechLine = bleConnected ? "Bluetooth events are live." : "Bluetooth scan is active in portable mode.";
     } else if (item == 3) {
       speechLine = "WiFi bridge is better for camera and audio payloads.";
     }
@@ -1413,7 +1555,7 @@ void handleSerialLine(String line) {
     applyEvent(lower);
   }
 
-  Serial.printf("ok rotation=%d mood=%s event=%s sd=%s\n", displayRotation, moodNames[currentMood], lastEvent.c_str(), sdReady ? "ready" : "missing");
+  Serial.printf("ok rotation=%d mood=%s event=%s sd=%s ble=%s\n", displayRotation, moodNames[currentMood], lastEvent.c_str(), sdReady ? "ready" : "missing", bleConnected ? "connected" : "scan");
 }
 
 void processSerial() {
@@ -1599,6 +1741,7 @@ void setup() {
 
 void loop() {
   processSerial();
+  updateSenseBle();
   handleTouch();
   updateBuddy();
   drawFrame();
