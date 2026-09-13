@@ -123,3 +123,58 @@ help
 ```
 
 The bridge prints `BUDDY event ...` lines that can be relayed into the CYD firmware later.
+
+## PC Relay With Ollama
+
+Run this on the Windows host while both boards are plugged in:
+
+```powershell
+python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest
+```
+
+The relay:
+
+- initializes the XIAO Sense camera/mic bridge
+- periodically asks the XIAO for a camera capture
+- forwards `BUDDY event ...` lines to the CYD as `event ...`
+- asks Ollama for short Gemma responses; set `OLLAMA_URL` or pass `--ollama-url`
+- sends Gemma text to the CYD as `say ...`
+
+For testing without the CYD:
+
+```powershell
+python tools\cyd_sense_ollama_relay.py --no-cyd --duration 30
+```
+
+For NukeBox Ollama, pass the NukeBox Ollama URL at runtime:
+
+```powershell
+$env:OLLAMA_URL='http://<nukebox-tailscale-ip>:11434'
+python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest
+```
+
+## AI Split
+
+The current working split is:
+
+- XIAO ESP32S3 Sense: eyes and ears, camera captures, mic levels, fast sensor events.
+- CYD Buddy: face, moods, touch personality, phrase display, persistent tiny memory counters.
+- NukeBox Ollama/Gemma: richer speech, chat personality, reasoning, weather/online/tool-backed answers through the PC relay.
+
+Good future onboard model targets:
+
+- XIAO: wake-word, clap/loud/quiet classifier, face/person/motion detection, simple visual mood cues.
+- CYD: rule-based mood memory, phrase selection, touch habits, low-cost personality state.
+- Ollama/OpenAI: full conversation, tool use, web/weather/system context, longer memory summaries.
+
+The XIAO and CYD are good for tiny classifiers and reflex behavior. They are not practical targets for a full Gemma-style LLM; that stays on NukeBox/Ollama or OpenAI.
+
+## MimiClaw Reference
+
+Local reference file found:
+
+```text
+C:\Users\CAK3D\Downloads\MimiClaw__ESP32-S3_.bin
+```
+
+`esptool image-info` identifies it as an ESP32-S3 image for 16 MB flash, built with ESP-IDF v5.5.2, compile time `Mar 17 2026 04:24:31`, size `16,711,680` bytes. Treat it as a reference artifact only for now; it is too large/mismatched for the 8 MB XIAO Sense flash target.
