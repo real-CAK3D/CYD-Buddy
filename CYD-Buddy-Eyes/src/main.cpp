@@ -88,6 +88,9 @@ bool touchWasDown = false;
 bool longTouchHandled = false;
 int lastTouchX = 0;
 int lastTouchY = 0;
+int touchStartX = 0;
+int touchStartY = 0;
+int touchMoveMax = 0;
 String serialLine;
 float breath = 0.0f;
 
@@ -101,6 +104,20 @@ float gazeX = 0.0f;
 float gazeY = 0.0f;
 float targetGazeX = 0.0f;
 float targetGazeY = 0.0f;
+unsigned long hurtUntil = 0;
+bool hurtLeftEye = false;
+bool hurtRightEye = false;
+unsigned long tickleUntil = 0;
+unsigned long lastInteractionMs = 0;
+unsigned long lastIdleMoodMs = 0;
+bool asleep = false;
+int bootMinuteOfDay = 0;
+unsigned long clockSetAtMs = 0;
+unsigned long buddyTouchCount = 0;
+unsigned long buddyEyePokeCount = 0;
+unsigned long buddyTickleCount = 0;
+unsigned long buddyBoredCount = 0;
+unsigned long lastMemorySaveMs = 0;
 
 String lastEvent = "idle";
 String statusLine = "tap mood, hold rotate";
@@ -113,6 +130,7 @@ uint16_t eyeColor = TFT_CYAN;
 uint16_t pupilColor = TFT_NAVY;
 uint16_t shineColor = TFT_WHITE;
 uint16_t accentColor = TFT_MAGENTA;
+bool customPupilColor = false;
 const uint16_t COLOR_CHOICES[] = {
   TFT_NAVY, TFT_BLACK, TFT_BLUE, TFT_SKYBLUE, TFT_CYAN, TFT_DARKCYAN,
   TFT_GREEN, TFT_GREENYELLOW, TFT_ORANGE, TFT_YELLOW, TFT_RED, TFT_PINK,
@@ -166,8 +184,56 @@ struct Eye {
 Eye leftEye;
 Eye rightEye;
 
+int compileTimeMinutes() {
+  String t = __TIME__;
+  int h = t.substring(0, 2).toInt();
+  int m = t.substring(3, 5).toInt();
+  return constrain(h * 60 + m, 0, 1439);
+}
+
+int minuteOfDay() {
+  unsigned long elapsedMinutes = (millis() - clockSetAtMs) / 60000UL;
+  return (bootMinuteOfDay + elapsedMinutes) % 1440;
+}
+
+bool setClockFromText(String value) {
+  value.trim();
+  int sep = value.indexOf(':');
+  if (sep < 0) return false;
+  int h = value.substring(0, sep).toInt();
+  int m = value.substring(sep + 1).toInt();
+  if (h < 0 || h > 23 || m < 0 || m > 59) return false;
+  bootMinuteOfDay = h * 60 + m;
+  clockSetAtMs = millis();
+  statusLine = "time set";
+  return true;
+}
+
+bool timeIsLateNight() {
+  int m = minuteOfDay();
+  return m >= 22 * 60 || m < 4 * 60;
+}
+
+bool timeIsEarlyAM() {
+  int m = minuteOfDay();
+  return m >= 4 * 60 && m < 7 * 60;
+}
+
+bool timeIsMorning() {
+  int m = minuteOfDay();
+  return m >= 7 * 60 && m < 11 * 60;
+}
+
+bool timeIsEvening() {
+  int m = minuteOfDay();
+  return m >= 18 * 60 && m < 22 * 60;
+}
+
 uint16_t moodEyeColor() {
   if (!moodEyeColorEnabled) return eyeColor;
+  if (timeIsEarlyAM()) return TFT_YELLOW;
+  if (timeIsMorning()) return TFT_SKYBLUE;
+  if (timeIsEvening() || timeIsLateNight()) return TFT_NAVY;
   switch (currentMood) {
     case MOOD_HAPPY: return TFT_GREENYELLOW;
     case MOOD_SURPRISED: return TFT_SKYBLUE;
@@ -179,6 +245,14 @@ uint16_t moodEyeColor() {
     case MOOD_SUSPICIOUS: return TFT_YELLOW;
     default: return TFT_CYAN;
   }
+}
+
+uint16_t activePupilColor() {
+  if (customPupilColor) return pupilColor;
+  if (timeIsEarlyAM()) return TFT_WHITE;
+  if (timeIsMorning()) return TFT_YELLOW;
+  if (timeIsEvening() || timeIsLateNight()) return TFT_BLACK;
+  return pupilColor;
 }
 
 uint16_t colorFromName(String color, uint16_t fallback) {
@@ -223,9 +297,38 @@ void cycleEyeColor() {
 }
 
 void cyclePupilColor() {
+  customPupilColor = true;
   pupilColorIndex = (pupilColorIndex + 1) % COLOR_COUNT;
   pupilColor = COLOR_CHOICES[pupilColorIndex];
   statusLine = String("pupil: ") + COLOR_NAMES[pupilColorIndex];
+}
+
+void loadBuddyMemory() {
+  prefs.begin("cyd-buddy", true);
+  buddyTouchCount = prefs.getULong("touches", 0);
+  buddyEyePokeCount = prefs.getULong("eyePokes", 0);
+  buddyTickleCount = prefs.getULong("tickles", 0);
+  buddyBoredCount = prefs.getULong("bored", 0);
+  prefs.end();
+}
+
+void saveBuddyMemory(bool force = false) {
+  unsigned long now = millis();
+  if (!force && now - lastMemorySaveMs < 15000UL) return;
+  prefs.begin("cyd-buddy", false);
+  prefs.putULong("touches", buddyTouchCount);
+  prefs.putULong("eyePokes", buddyEyePokeCount);
+  prefs.putULong("tickles", buddyTickleCount);
+  prefs.putULong("bored", buddyBoredCount);
+  prefs.end();
+  lastMemorySaveMs = now;
+}
+
+void markInteraction() {
+  buddyTouchCount++;
+  lastInteractionMs = millis();
+  asleep = false;
+  saveBuddyMemory();
 }
 
 void setBacklight(uint8_t value) {
@@ -394,10 +497,12 @@ bool isEyeClosed(bool left) {
 }
 
 float blinkAmount(bool left) {
+  unsigned long now = millis();
+  if (now < hurtUntil && ((left && hurtLeftEye) || (!left && hurtRightEye))) return 0.72f;
   if (!blinkActive) return 0.0f;
   if (winkActive && left != winkLeft) return 0.0f;
 
-  unsigned long age = millis() - blinkStarted;
+  unsigned long age = now - blinkStarted;
   float duration = winkActive ? 260.0f : 170.0f;
   float t = constrain(age / duration, 0.0f, 1.0f);
   float wave = sinf(t * PI);
@@ -485,7 +590,7 @@ void drawEye(Eye& e, bool left) {
     if (currentMood == MOOD_HAPPY || currentMood == MOOD_LOVE || currentMood == MOOD_EXCITED) py -= max(3, fullH / 10);
     px = constrain(px, x + 4, x + w - pw - 4);
     py = constrain(py, y + 4, y + h - ph - 4);
-    frame.fillEllipse(px + pw / 2, py + ph / 2, pw / 2, ph / 2, pupilColor);
+    frame.fillEllipse(px + pw / 2, py + ph / 2, pw / 2, ph / 2, activePupilColor());
     frame.fillCircle(px + pw / 2 - pw / 5, py + ph / 2 - ph / 5, max(2, pw / 8), shineColor);
   }
 
@@ -576,6 +681,42 @@ void updateBuddy() {
   breath += 0.045f;
   updateBlinkState();
 
+  if (lastInteractionMs == 0) lastInteractionMs = now;
+  unsigned long idleMs = now - lastInteractionMs;
+  bool quietAuto = autoMode && menuMode == MENU_NONE;
+
+  if (quietAuto && ((timeIsLateNight() && idleMs > 300000UL) || idleMs > 600000UL)) {
+    if (!asleep) {
+      buddyBoredCount++;
+      currentMood = MOOD_SLEEPY;
+      speechLine = timeIsLateNight() ? "It is late. I am going to sleep now." : "I got bored and fell asleep.";
+      speechScroll = 0;
+      statusLine = "asleep";
+      asleep = true;
+      saveBuddyMemory(true);
+    }
+    targetGazeX = 0;
+    targetGazeY = 8;
+  } else if (quietAuto && idleMs > 300000UL) {
+    if (currentMood != MOOD_SLEEPY || now - lastIdleMoodMs > 60000UL) {
+      currentMood = MOOD_SLEEPY;
+      statusLine = "sleepy";
+      speechLine = "I am getting sleepy.";
+      speechScroll = 0;
+      lastIdleMoodMs = now;
+    }
+  } else if (quietAuto && idleMs > 120000UL) {
+    if (now - lastIdleMoodMs > 60000UL) {
+      buddyBoredCount++;
+      currentMood = buddyEyePokeCount > buddyTickleCount + 3 ? MOOD_SUSPICIOUS : MOOD_SAD;
+      statusLine = "bored";
+      speechLine = buddyEyePokeCount > buddyTickleCount + 3 ? "No pokes lately. Suspicious." : "I am bored. Do something interesting.";
+      speechScroll = 0;
+      lastIdleMoodMs = now;
+      saveBuddyMemory();
+    }
+  }
+
   if (now - lastSaccade > nextSaccadeMs) {
     targetGazeX = random(-18, 19);
     targetGazeY = random(-14, 15);
@@ -584,8 +725,12 @@ void updateBuddy() {
   }
   gazeX += (targetGazeX - gazeX) * 0.11f;
   gazeY += (targetGazeY - gazeY) * 0.11f;
+  if (now < tickleUntil) {
+    gazeX += sinf(breath * 2.7f) * 1.8f;
+    gazeY += cosf(breath * 3.1f) * 1.2f;
+  }
 
-  if (autoMode && now >= nextAutonomyMs && menuMode == MENU_NONE) {
+  if (autoMode && now >= nextAutonomyMs && menuMode == MENU_NONE && !asleep && idleMs < 600000UL) {
     int roll = random(0, 100);
     if (roll < 55) {
       currentMood = (Mood)random(0, MOOD_COUNT);
@@ -725,6 +870,51 @@ bool isUpperRightHotspot(int x, int y) {
   return x > screenW - max(48, screenW / 5) && y < max(42, screenH / 6);
 }
 
+bool pointInEye(Eye& e, int px, int py) {
+  int x = (int)e.x - 8;
+  int y = (int)e.y - 8;
+  int w = (int)e.w + 16;
+  int h = (int)e.h + 16;
+  return px >= x && px <= x + w && py >= y && py <= y + h;
+}
+
+void reactToEyePoke(bool left, bool right) {
+  markInteraction();
+  buddyEyePokeCount++;
+  hurtLeftEye = left;
+  hurtRightEye = right;
+  hurtUntil = millis() + 1150UL;
+  currentMood = buddyEyePokeCount > 5 ? MOOD_SUSPICIOUS : MOOD_ANGRY;
+  statusLine = "ow";
+  if (buddyEyePokeCount > 5) {
+    speechLine = "I am starting to notice a pattern with the eye poking.";
+  } else {
+    speechLine = "Ow. That was my eye.";
+  }
+  targetGazeX = left ? 14 : right ? -14 : 0;
+  targetGazeY = -6;
+  speechScroll = 0;
+  saveBuddyMemory(true);
+}
+
+void reactToTickle() {
+  markInteraction();
+  buddyTickleCount++;
+  tickleUntil = millis() + 1800UL;
+  currentMood = buddyTickleCount > 6 ? MOOD_EXCITED : MOOD_HAPPY;
+  statusLine = "tickled";
+  if (buddyTickleCount > 6) {
+    speechLine = "You keep doing that. I am learning your nonsense.";
+  } else {
+    speechLine = "Hey. That tickles.";
+  }
+  targetGazeX = random(-16, 17);
+  targetGazeY = random(-10, 11);
+  startBlink(false);
+  speechScroll = 0;
+  saveBuddyMemory(true);
+}
+
 void menuGeometry(MenuMode mode, int& x, int& y, int& w, int& h) {
   w = min(screenW - 24, 196);
   h = min(screenH - 42, 176);
@@ -780,6 +970,7 @@ void setAutoMode(bool enabled) {
 }
 
 void handleAutoTap() {
+  markInteraction();
   lastEvent = "tap";
   nextAutonomyMs = millis() + random(7000, 16000);
   targetGazeX = random(-10, 11);
@@ -911,11 +1102,17 @@ void handleTouch() {
   if (down) {
     lastTouchX = x;
     lastTouchY = y;
+    int dx = x - touchStartX;
+    int dy = y - touchStartY;
+    touchMoveMax = max(touchMoveMax, (int)sqrtf((float)(dx * dx + dy * dy)));
   }
 
   if (down && !touchWasDown) {
     touchStarted = now;
     longTouchHandled = false;
+    touchStartX = x;
+    touchStartY = y;
+    touchMoveMax = 0;
   }
 
   if (down && !longTouchHandled && now - touchStarted > 850) {
@@ -941,10 +1138,15 @@ void handleTouch() {
       openMenu(MENU_SYSTEM);
     } else if (isUpperRightHotspot(lastTouchX, lastTouchY)) {
       openMenu(MENU_FACE);
+    } else if (touchMoveMax > 34) {
+      reactToTickle();
+    } else if (pointInEye(leftEye, lastTouchX, lastTouchY) || pointInEye(rightEye, lastTouchX, lastTouchY)) {
+      reactToEyePoke(pointInEye(leftEye, lastTouchX, lastTouchY), pointInEye(rightEye, lastTouchX, lastTouchY));
     } else {
       if (autoMode) {
         handleAutoTap();
       } else {
+        markInteraction();
         currentMood = (Mood)((currentMood + 1) % MOOD_COUNT);
         statusLine = String("manual: ") + moodNames[currentMood];
         startBlink(false);
@@ -978,10 +1180,24 @@ void handleSerialLine(String line) {
   } else if (lower == "tap") {
     if (autoMode) handleAutoTap();
     else {
+      markInteraction();
       currentMood = (Mood)((currentMood + 1) % MOOD_COUNT);
       statusLine = String("manual: ") + moodNames[currentMood];
       startBlink(false);
     }
+  } else if (lower == "tickle") {
+    reactToTickle();
+  } else if (lower.startsWith("poke")) {
+    bool left = lower.indexOf("right") < 0;
+    bool right = lower.indexOf("left") < 0;
+    reactToEyePoke(left, right);
+  } else if (lower.startsWith("time ")) {
+    bool ok = setClockFromText(lower.substring(5));
+    Serial.printf("time_set=%s minute=%d\n", ok ? "ok" : "failed", minuteOfDay());
+  } else if (lower == "memory") {
+    Serial.printf("memory touches=%lu eye_pokes=%lu tickles=%lu bored=%lu minute=%d custom_eye=%s custom_pupil=%s\n",
+                  buddyTouchCount, buddyEyePokeCount, buddyTickleCount, buddyBoredCount,
+                  minuteOfDay(), moodEyeColorEnabled ? "false" : "true", customPupilColor ? "true" : "false");
   } else if (lower.startsWith("eye color ")) {
     String color = lower.substring(10);
     if (color == "default" || color == "auto") {
@@ -995,9 +1211,15 @@ void handleSerialLine(String line) {
     }
   } else if (lower.startsWith("pupil color ")) {
     String color = lower.substring(12);
+    if (color == "default" || color == "auto") {
+      customPupilColor = false;
+      statusLine = "pupil color default";
+    } else {
     pupilColorIndex = colorIndexFromName(color, pupilColorIndex);
     pupilColor = colorFromName(color, COLOR_CHOICES[pupilColorIndex]);
+      customPupilColor = true;
     statusLine = String("pupil: ") + color;
+    }
   } else if (lower.startsWith("say ")) {
     speechLine = line.substring(4);
     statusLine = "speaking";
@@ -1183,6 +1405,10 @@ void drawFrame() {
 void setup() {
   Serial.begin(115200);
   randomSeed(esp_random());
+  bootMinuteOfDay = compileTimeMinutes();
+  clockSetAtMs = millis();
+  lastInteractionMs = millis();
+  loadBuddyMemory();
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   setBacklight(255);
@@ -1212,7 +1438,7 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, blink, wink, auto, manual, speak, eye color <name|default>, pupil color <name>, sd status, phrase add <mood> <phrase>");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, tickle, poke left, time HH:MM, memory, blink, wink, auto, manual, speak, eye color <name|default>, pupil color <name|default>, sd status, phrase add <mood> <phrase>");
 }
 
 void loop() {
