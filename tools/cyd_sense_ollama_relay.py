@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import queue
 import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -27,6 +29,9 @@ from serial import SerialException
 
 
 DEFAULT_OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
+TOOL_DIR = Path(__file__).resolve().parent
+WINDOWS_STT = TOOL_DIR / "windows_stt_once.ps1"
+WINDOWS_TTS = TOOL_DIR / "windows_tts_say.ps1"
 
 
 @dataclass
@@ -37,6 +42,7 @@ class BridgeState:
     last_ai_at: float = 0.0
     sent_count: int = 0
     ai_count: int = 0
+    stt_count: int = 0
 
 
 class SerialEndpoint:
@@ -186,6 +192,98 @@ def ask_ollama(base_url: str, model: str, event_line: str, state: BridgeState, t
     return text[:110] if text else None
 
 
+def ask_ollama_chat(base_url: str, model: str, user_text: str, state: BridgeState, timeout: float) -> Optional[str]:
+    prompt = (
+        "You are CYD Buddy, a small screen buddy with eyes, moods, camera snapshots, "
+        "and a sarcastic but loyal personality. Answer the user directly in one concise "
+        "spoken line. If they ask weather or live facts and you do not have tool data, say "
+        "you need the online bridge/weather tool instead of inventing facts. No markdown.\n\n"
+        f"User said: {user_text}\n"
+        f"Recent sensor event: {state.last_event}\n"
+        f"Recent frame: {state.last_frame or 'none'}"
+    )
+    try:
+        response = requests.post(
+            f"{base_url.rstrip('/')}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.8, "num_predict": 80},
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        text = response.json().get("response", "").strip()
+    except Exception as exc:
+        print(f"[ollama] chat failed: {exc}")
+        return None
+
+    text = re.sub(r"[\r\n]+", " ", text).strip().strip('"')
+    return text[:180] if text else None
+
+
+def windows_stt_once(seconds: float, min_confidence: float) -> Optional[tuple[str, float]]:
+    if not WINDOWS_STT.exists():
+        print(f"[stt] missing helper {WINDOWS_STT}")
+        return None
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(WINDOWS_STT),
+        "-ListenSeconds",
+        str(seconds),
+        "-MinConfidence",
+        str(min_confidence),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=seconds + 6)
+    except Exception as exc:
+        print(f"[stt] failed: {exc}")
+        return None
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        print(f"[stt] unavailable: {detail}")
+        return None
+    line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+    if not line:
+        return None
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        print(f"[stt] unparsed: {line}")
+        return None
+    text = str(payload.get("text", "")).strip()
+    confidence = float(payload.get("confidence", 0.0))
+    return (text, confidence) if text else None
+
+
+def windows_tts_say(text: str, rate: int = 0, volume: int = 100) -> None:
+    if not WINDOWS_TTS.exists() or not text:
+        return
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(WINDOWS_TTS),
+        "-Text",
+        text,
+        "-Rate",
+        str(rate),
+        "-Volume",
+        str(volume),
+    ]
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:
+        print(f"[tts] failed: {exc}")
+
+
 def xiao_reader(xiao: SerialEndpoint, events: queue.Queue[str], state: BridgeState, stop: threading.Event) -> None:
     while not stop.is_set():
         line = xiao.read_line()
@@ -209,6 +307,32 @@ def cyd_reader(cyd: SerialEndpoint, commands: queue.Queue[str], stop: threading.
                 commands.put(command)
 
 
+def stt_worker(
+    transcripts: queue.Queue[str],
+    wake_requests: queue.Queue[str],
+    stop: threading.Event,
+    enabled: bool,
+    always_on: bool,
+    listen_seconds: float,
+    min_confidence: float,
+) -> None:
+    if not enabled:
+        return
+    print(f"[stt] windows recognizer ready always_on={always_on}")
+    while not stop.is_set():
+        if not always_on:
+            try:
+                wake_requests.get(timeout=0.25)
+            except queue.Empty:
+                continue
+        result = windows_stt_once(listen_seconds, min_confidence)
+        if not result:
+            continue
+        text, confidence = result
+        print(f"[stt] {text} ({confidence:.2f})")
+        transcripts.put(text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bridge XIAO Sense events to CYD Buddy and Ollama.")
     parser.add_argument("--xiao-port", default="COM7")
@@ -221,12 +345,21 @@ def main() -> int:
     parser.add_argument("--capture-interval", type=float, default=3.0)
     parser.add_argument("--ai-cooldown", type=float, default=2.0)
     parser.add_argument("--active", action="store_true", help="Use hotter/faster S3 sensing instead of cool snapshot mode.")
+    parser.add_argument("--stt", choices=["off", "windows"], default="windows", help="Speech-to-text provider for spoken prompts.")
+    parser.add_argument("--stt-always", action="store_true", help="Continuously listen instead of waiting for a XIAO wake/speech event.")
+    parser.add_argument("--listen-seconds", type=float, default=5.0, help="Seconds to listen for each speech prompt.")
+    parser.add_argument("--stt-confidence", type=float, default=0.25, help="Minimum Windows dictation confidence.")
+    parser.add_argument("--tts", choices=["off", "windows"], default="off", help="Text-to-speech provider for AI replies.")
+    parser.add_argument("--tts-rate", type=int, default=0)
+    parser.add_argument("--tts-volume", type=int, default=100)
     parser.add_argument("--duration", type=float, default=0.0, help="Optional run length in seconds.")
     args = parser.parse_args()
 
     state = BridgeState()
     events: queue.Queue[str] = queue.Queue()
     commands: queue.Queue[str] = queue.Queue()
+    transcripts: queue.Queue[str] = queue.Queue()
+    wake_requests: queue.Queue[str] = queue.Queue()
     stop = threading.Event()
 
     def stop_now(_sig=None, _frame=None) -> None:
@@ -248,6 +381,20 @@ def main() -> int:
     if not args.no_cyd:
         cyd_commands = threading.Thread(target=cyd_reader, args=(cyd, commands, stop), daemon=True)
         cyd_commands.start()
+    speech_thread = threading.Thread(
+        target=stt_worker,
+        args=(
+            transcripts,
+            wake_requests,
+            stop,
+            args.stt == "windows",
+            args.stt_always,
+            args.listen_seconds,
+            args.stt_confidence,
+        ),
+        daemon=True,
+    )
+    speech_thread.start()
 
     time.sleep(0.8)
     xiao.write_line("active" if args.active else "cool")
@@ -276,6 +423,27 @@ def main() -> int:
             print(f"[relay] CYD->XIAO {command}")
             xiao.write_line(command)
 
+        while True:
+            try:
+                transcript = transcripts.get_nowait()
+            except queue.Empty:
+                break
+            state.stt_count += 1
+            state.last_event = "voice transcript"
+            print(f"[voice] {transcript}")
+            if not args.no_cyd:
+                cyd.write_line(f"say Heard: {transcript}")
+            if not args.no_ollama:
+                speech = ask_ollama_chat(args.ollama_url, args.model, transcript, state, timeout=25.0)
+                state.last_ai_at = time.time()
+                if speech:
+                    state.ai_count += 1
+                    print(f"[ollama] {speech}")
+                    if not args.no_cyd:
+                        cyd.write_line(f"say {speech}")
+                    if args.tts == "windows":
+                        windows_tts_say(speech, args.tts_rate, args.tts_volume)
+
         try:
             event_line = events.get(timeout=0.2)
         except queue.Empty:
@@ -283,6 +451,8 @@ def main() -> int:
 
         state.last_event = event_line
         print(f"[relay] {event_line}")
+        if ("voice:wake" in event_line or "voice:speech" in event_line) and args.stt == "windows":
+            wake_requests.put(event_line)
 
         if not args.no_cyd:
             if cyd.write_line(event_line):
@@ -296,11 +466,13 @@ def main() -> int:
                 print(f"[ollama] {speech}")
                 if not args.no_cyd:
                     cyd.write_line(f"say {speech}")
+                if args.tts == "windows":
+                    windows_tts_say(speech, args.tts_rate, args.tts_volume)
 
     stop.set()
     xiao.close()
     cyd.close()
-    print(f"[relay] stopped sent={state.sent_count} ai={state.ai_count}")
+    print(f"[relay] stopped sent={state.sent_count} ai={state.ai_count} stt={state.stt_count}")
     return 0
 
 

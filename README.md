@@ -151,8 +151,28 @@ The relay:
 - forwards `BUDDY event ...` lines to the CYD as `event ...`
 - asks Ollama for short Gemma responses; set `OLLAMA_URL` or pass `--ollama-url`
 - sends Gemma text to the CYD as `say ...`
+- can use Windows speech recognition for spoken prompts
+- can use Windows/SAPI text-to-speech for replies when a speaker is available
 
-The relay does not transcribe speech yet. If you ask "what is the weather" out loud, the S3 can currently report that speech happened or that the wake-name was heard, but a speech-to-text layer still needs to be added before Ollama can receive the actual words.
+Speech-to-text currently uses the Windows default microphone through the relay. The XIAO still provides wake/speech sensor events, but it does not stream raw audio yet. Wake-triggered listening is enabled by default:
+
+```powershell
+python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest --stt windows
+```
+
+For testing without the wake trigger, keep the microphone listening in short repeated windows:
+
+```powershell
+python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest --stt windows --stt-always
+```
+
+Text-to-speech is optional and off by default. To speak replies through Windows audio:
+
+```powershell
+python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest --stt windows --tts windows
+```
+
+When a physical speaker is added to the buddy hardware, the same relay path can be redirected to that output path instead of the PC speakers.
 
 For testing without the CYD:
 
