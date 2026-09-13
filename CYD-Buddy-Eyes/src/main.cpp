@@ -133,6 +133,8 @@ volatile bool bleEventReady = false;
 bool bleDisconnected = false;
 bool senseStreamEvents = true;
 bool senseAutoConnect = false;
+volatile bool bleConnectInProgress = false;
+unsigned long bleConnectStartedMs = 0;
 BLEAdvertisedDevice* senseDevice = nullptr;
 BLEClient* senseClient = nullptr;
 BLERemoteCharacteristic* senseEventChar = nullptr;
@@ -480,10 +482,8 @@ void onSenseNotify(BLERemoteCharacteristic*, uint8_t* data, size_t length, bool)
 bool sendSenseCommand(String command) {
   command.trim();
   if (command == "connect") {
-    senseAutoConnect = true;
-    lastBleScanMs = 0;
-    statusLine = "xiao scan";
-    speechLine = "Scanning for XIAO Sense.";
+    statusLine = "xiao ble paused";
+    speechLine = "Direct XIAO BLE is paused because attach was crashing me.";
     speechScroll = 0;
     return true;
   }
@@ -557,6 +557,12 @@ bool connectSenseBle() {
   return true;
 }
 
+void connectSenseBleTask(void*) {
+  connectSenseBle();
+  bleConnectInProgress = false;
+  vTaskDelete(nullptr);
+}
+
 void updateSenseBle() {
   beginSenseBle();
   unsigned long now = millis();
@@ -575,7 +581,16 @@ void updateSenseBle() {
     statusLine = "xiao scan";
     BLEDevice::getScan()->start(2, false);
   }
-  if (!bleConnected && senseDevice) connectSenseBle();
+  if (!bleConnected && senseDevice && !bleConnectInProgress) {
+    bleConnectInProgress = true;
+    bleConnectStartedMs = now;
+    xTaskCreatePinnedToCore(connectSenseBleTask, "sense_ble", 8192, nullptr, 1, nullptr, 0);
+  }
+  if (bleConnectInProgress && now - bleConnectStartedMs > 12000) {
+    statusLine = "xiao attach slow";
+    speechLine = "XIAO BLE attach is taking too long, but I am still awake.";
+    speechScroll = 0;
+  }
 
   if (bleEventReady) {
     bleEventReady = false;
