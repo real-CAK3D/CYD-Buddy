@@ -30,20 +30,24 @@ rotate [0-3]
 mood happy
 event face
 stats cpu=90 temp=80
+tap
 blink
 wink
+auto
+manual
+speak
 menu system
 menu face
 menu close
 sd status
 phrase add <mood> <phrase>
-auto
-manual
-speak
 eye color default
 eye color amber
+pupil color lime
 say <text to show on the speech line>
 ```
+
+Color names include `black`, `navy`, `blue`, `sky`, `cyan`, `teal`, `green`, `lime`, `amber`, `yellow`, `red`, `pink`, `purple`, `white`, and `gray`.
 
 ## Menus
 
@@ -53,6 +57,8 @@ say <text to show on the speech line>
 - Rows can open submenus.
 - Back returns to the previous menu or closes the current top-level menu.
 - Face menus include auto/manual mode and default/fixed eye color choices.
+- In manual mode, a normal face tap cycles moods.
+- In auto mode, a normal face tap wakes or nudges the buddy to react instead of forcing the next mood.
 - System menus include the SD phrase bank and placeholders for XIAO, AI model, and Wi-Fi bridge setup.
 
 ## Next Steps

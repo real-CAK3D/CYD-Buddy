@@ -96,6 +96,11 @@ bool winkActive = false;
 bool winkLeft = false;
 unsigned long blinkStarted = 0;
 unsigned long nextBlinkMs = 0;
+float blinkPeak = 1.0f;
+float gazeX = 0.0f;
+float gazeY = 0.0f;
+float targetGazeX = 0.0f;
+float targetGazeY = 0.0f;
 
 String lastEvent = "idle";
 String statusLine = "tap mood, hold rotate";
@@ -108,6 +113,19 @@ uint16_t eyeColor = TFT_CYAN;
 uint16_t pupilColor = TFT_NAVY;
 uint16_t shineColor = TFT_WHITE;
 uint16_t accentColor = TFT_MAGENTA;
+const uint16_t COLOR_CHOICES[] = {
+  TFT_NAVY, TFT_BLACK, TFT_BLUE, TFT_SKYBLUE, TFT_CYAN, TFT_DARKCYAN,
+  TFT_GREEN, TFT_GREENYELLOW, TFT_ORANGE, TFT_YELLOW, TFT_RED, TFT_PINK,
+  TFT_MAGENTA, TFT_WHITE, TFT_LIGHTGREY
+};
+const char* COLOR_NAMES[] = {
+  "navy", "black", "blue", "sky", "cyan", "teal",
+  "green", "lime", "amber", "yellow", "red", "pink",
+  "purple", "white", "gray"
+};
+static const int COLOR_COUNT = sizeof(COLOR_CHOICES) / sizeof(COLOR_CHOICES[0]);
+int eyeColorIndex = 4;
+int pupilColorIndex = 0;
 
 struct Eye {
   float x, y, w, h;
@@ -161,6 +179,53 @@ uint16_t moodEyeColor() {
     case MOOD_SUSPICIOUS: return TFT_YELLOW;
     default: return TFT_CYAN;
   }
+}
+
+uint16_t colorFromName(String color, uint16_t fallback) {
+  color.trim();
+  color.toLowerCase();
+  if (color == "black") return TFT_BLACK;
+  if (color == "navy") return TFT_NAVY;
+  if (color == "blue") return TFT_BLUE;
+  if (color == "sky" || color == "skyblue") return TFT_SKYBLUE;
+  if (color == "cyan") return TFT_CYAN;
+  if (color == "teal") return TFT_DARKCYAN;
+  if (color == "green") return TFT_GREEN;
+  if (color == "lime") return TFT_GREENYELLOW;
+  if (color == "amber" || color == "orange") return TFT_ORANGE;
+  if (color == "yellow") return TFT_YELLOW;
+  if (color == "red") return TFT_RED;
+  if (color == "pink") return TFT_PINK;
+  if (color == "purple" || color == "magenta") return TFT_MAGENTA;
+  if (color == "white") return TFT_WHITE;
+  if (color == "gray" || color == "grey") return TFT_LIGHTGREY;
+  return fallback;
+}
+
+int colorIndexFromName(String color, int fallback) {
+  color.trim();
+  color.toLowerCase();
+  for (int i = 0; i < COLOR_COUNT; i++) {
+    if (color == COLOR_NAMES[i]) return i;
+  }
+  if (color == "orange") return 8;
+  if (color == "skyblue") return 3;
+  if (color == "purple") return 12;
+  if (color == "grey") return 14;
+  return fallback;
+}
+
+void cycleEyeColor() {
+  moodEyeColorEnabled = false;
+  eyeColorIndex = (eyeColorIndex + 1) % COLOR_COUNT;
+  eyeColor = COLOR_CHOICES[eyeColorIndex];
+  statusLine = String("eye: ") + COLOR_NAMES[eyeColorIndex];
+}
+
+void cyclePupilColor() {
+  pupilColorIndex = (pupilColorIndex + 1) % COLOR_COUNT;
+  pupilColor = COLOR_CHOICES[pupilColorIndex];
+  statusLine = String("pupil: ") + COLOR_NAMES[pupilColorIndex];
 }
 
 void setBacklight(uint8_t value) {
@@ -306,20 +371,19 @@ void startBlink(bool wink = false, bool left = false) {
   winkActive = wink;
   winkLeft = left;
   blinkStarted = millis();
+  blinkPeak = wink ? 0.92f : 1.0f;
 }
 
 void updateBlinkState() {
   unsigned long now = millis();
   if (!blinkActive && now >= nextBlinkMs) {
-    bool allowWink = currentMood == MOOD_HAPPY || currentMood == MOOD_EXCITED || currentMood == MOOD_LOVE || currentMood == MOOD_SUSPICIOUS;
-    bool doWink = allowWink && random(0, 12) == 0;
-    startBlink(doWink, random(0, 2) == 0);
+    startBlink(false);
   }
 
-  if (blinkActive && now - blinkStarted > (winkActive ? 220UL : 145UL)) {
+  if (blinkActive && now - blinkStarted > (winkActive ? 260UL : 170UL)) {
     blinkActive = false;
     winkActive = false;
-    nextBlinkMs = now + random(1400, 5200);
+    nextBlinkMs = now + random(1800, currentMood == MOOD_SLEEPY ? 3600 : 5600);
   }
 }
 
@@ -327,6 +391,18 @@ bool isEyeClosed(bool left) {
   if (!blinkActive) return false;
   if (!winkActive) return true;
   return left == winkLeft;
+}
+
+float blinkAmount(bool left) {
+  if (!blinkActive) return 0.0f;
+  if (winkActive && left != winkLeft) return 0.0f;
+
+  unsigned long age = millis() - blinkStarted;
+  float duration = winkActive ? 260.0f : 170.0f;
+  float t = constrain(age / duration, 0.0f, 1.0f);
+  float wave = sinf(t * PI);
+  if (currentMood == MOOD_SLEEPY && !winkActive) wave = max(wave, 0.42f);
+  return constrain(wave * blinkPeak, 0.0f, 1.0f);
 }
 
 void drawHeart(int cx, int cy, int s, uint16_t color) {
@@ -350,12 +426,7 @@ void drawSpark(int cx, int cy, uint16_t color) {
   frame.drawLine(cx - 7, cy + 7, cx + 7, cy - 7, color);
 }
 
-void drawEyelidMask(Eye& e, bool left) {
-  int x = (int)e.x;
-  int y = (int)e.y;
-  int w = (int)e.w;
-  int h = (int)e.h;
-
+void drawEyelidMask(int x, int y, int w, int h, bool left) {
   if (currentMood == MOOD_ANGRY) {
     if (left) {
       frame.fillTriangle(x - 6, y - 6, x + w + 6, y - 6, x + w + 6, y + h / 3, bgColor);
@@ -363,8 +434,12 @@ void drawEyelidMask(Eye& e, bool left) {
       frame.fillTriangle(x - 6, y - 6, x + w + 6, y - 6, x - 6, y + h / 3, bgColor);
     }
   } else if (currentMood == MOOD_SAD) {
-    frame.fillRect(x - 3, y - 3, w + 6, h / 5, bgColor);
-    frame.fillEllipse(x + w / 2, y + h + 8, w / 2 + 8, h / 4, bgColor);
+    if (left) {
+      frame.fillTriangle(x - 6, y - 6, x + w + 6, y - 6, x - 6, y + h / 3, bgColor);
+    } else {
+      frame.fillTriangle(x - 6, y - 6, x + w + 6, y - 6, x + w + 6, y + h / 3, bgColor);
+    }
+    frame.fillEllipse(x + w / 2, y + h + 7, w / 2 + 8, h / 5, bgColor);
   } else if (currentMood == MOOD_HAPPY || currentMood == MOOD_LOVE || currentMood == MOOD_EXCITED) {
     frame.fillRect(x - 2, y + h - 18, w + 4, 24, bgColor);
     frame.fillEllipse(x + w / 2, y + h + 14, w / 2 + 18, h / 2, bgColor);
@@ -381,26 +456,40 @@ void drawEye(Eye& e, bool left) {
   int y = (int)e.y;
   int w = max(8, (int)e.w);
   int h = max(6, (int)e.h);
-  bool closed = isEyeClosed(left);
-  if (closed) h = max(6, h / 8);
+  float blink = blinkAmount(left);
+  bool closed = blink > 0.86f;
+  int fullH = h;
+  int blinkH = max(5, (int)(fullH * (1.0f - blink * 0.88f)));
+  y += (fullH - blinkH) / 2;
+  h = blinkH;
 
   uint16_t c = moodEyeColor();
   frame.fillRoundRect(x, y, w, h, min(w, h) / 3, c);
   frame.drawRoundRect(x - 2, y - 2, w + 4, h + 4, min(w, h) / 3, TFT_DARKCYAN);
 
-  int pw = max(10, w / 3);
-  int ph = max(10, h / 3);
-  int px = x + w / 2 - pw / 2 + (int)e.pupilX;
-  int py = y + h / 2 - ph / 2 + (int)e.pupilY;
-  px = constrain(px, x + 4, x + w - pw - 4);
-  py = constrain(py, y + 4, y + h - ph - 4);
-
   if (!closed) {
+    int pw = max(10, w / 3);
+    int ph = max(10, fullH / 3);
+    if (currentMood == MOOD_SURPRISED) {
+      pw = max(pw + 4, (int)(w * 0.42f));
+      ph = max(ph + 4, (int)(fullH * 0.42f));
+    } else if (currentMood == MOOD_HAPPY || currentMood == MOOD_LOVE || currentMood == MOOD_EXCITED) {
+      pw = max(8, (int)(w * 0.24f));
+      ph = max(8, (int)(fullH * 0.24f));
+    } else if (currentMood == MOOD_SLEEPY || currentMood == MOOD_SUSPICIOUS) {
+      ph = max(7, (int)(fullH * 0.22f));
+    }
+
+    int px = x + w / 2 - pw / 2 + (int)e.pupilX;
+    int py = y + h / 2 - ph / 2 + (int)e.pupilY;
+    if (currentMood == MOOD_HAPPY || currentMood == MOOD_LOVE || currentMood == MOOD_EXCITED) py -= max(3, fullH / 10);
+    px = constrain(px, x + 4, x + w - pw - 4);
+    py = constrain(py, y + 4, y + h - ph - 4);
     frame.fillEllipse(px + pw / 2, py + ph / 2, pw / 2, ph / 2, pupilColor);
     frame.fillCircle(px + pw / 2 - pw / 5, py + ph / 2 - ph / 5, max(2, pw / 8), shineColor);
   }
 
-  drawEyelidMask(e, left);
+  drawEyelidMask(x, y, w, h, left);
 }
 
 void chooseMoodTargets() {
@@ -443,24 +532,43 @@ void chooseMoodTargets() {
   leftEye.tw = rightEye.tw = baseW;
   leftEye.th = rightEye.th = baseH;
 
+  float leftPX = gazeX;
+  float rightPX = gazeX;
+  float leftPY = gazeY;
+  float rightPY = gazeY;
+
   if (currentMood == MOOD_SAD) {
-    leftEye.targetPupilX = 0;
-    rightEye.targetPupilX = 0;
-    leftEye.targetPupilY = baseH * 0.14f;
-    rightEye.targetPupilY = baseH * 0.14f;
+    leftPX *= 0.35f;
+    rightPX *= 0.35f;
+    leftPY = baseH * 0.14f + gazeY * 0.35f;
+    rightPY = baseH * 0.14f + gazeY * 0.35f;
   } else if (currentMood == MOOD_ANGRY) {
-    leftEye.targetPupilX = baseW * 0.10f;
-    rightEye.targetPupilX = -baseW * 0.10f;
-    leftEye.targetPupilY = -baseH * 0.04f;
-    rightEye.targetPupilY = -baseH * 0.04f;
+    leftPX = baseW * 0.10f + gazeX * 0.25f;
+    rightPX = -baseW * 0.10f + gazeX * 0.25f;
+    leftPY = -baseH * 0.04f + gazeY * 0.25f;
+    rightPY = -baseH * 0.04f + gazeY * 0.25f;
   } else if (suspicious) {
-    float driftX = sinf(breath * 0.55f) * 3.0f;
-    float driftY = cosf(breath * 0.45f) * 2.0f;
-    leftEye.targetPupilX = -baseW * 0.14f + driftX;
-    rightEye.targetPupilX = -baseW * 0.14f + driftX;
-    leftEye.targetPupilY = driftY;
-    rightEye.targetPupilY = driftY;
+    float sideEye = sinf(breath * 0.38f) * baseW * 0.19f;
+    if (fabsf(sideEye) < baseW * 0.045f) sideEye = 0.0f;
+    float driftY = cosf(breath * 0.45f) * 1.5f;
+    leftPX = sideEye;
+    rightPX = sideEye;
+    leftPY = driftY;
+    rightPY = driftY;
+  } else if (currentMood == MOOD_SURPRISED) {
+    leftPX = gazeX * 0.55f;
+    rightPX = gazeX * 0.55f;
+    leftPY = gazeY * 0.45f;
+    rightPY = gazeY * 0.45f;
+  } else if (currentMood == MOOD_HAPPY || currentMood == MOOD_LOVE || currentMood == MOOD_EXCITED) {
+    leftPY = -baseH * 0.05f + gazeY * 0.45f;
+    rightPY = -baseH * 0.05f + gazeY * 0.45f;
   }
+
+  leftEye.targetPupilX = leftPX;
+  rightEye.targetPupilX = rightPX;
+  leftEye.targetPupilY = leftPY;
+  rightEye.targetPupilY = rightPY;
 }
 
 void updateBuddy() {
@@ -469,15 +577,13 @@ void updateBuddy() {
   updateBlinkState();
 
   if (now - lastSaccade > nextSaccadeMs) {
-    float dx = random(-18, 19);
-    float dy = random(-14, 15);
-    leftEye.targetPupilX = dx;
-    rightEye.targetPupilX = dx;
-    leftEye.targetPupilY = dy;
-    rightEye.targetPupilY = dy;
+    targetGazeX = random(-18, 19);
+    targetGazeY = random(-14, 15);
     lastSaccade = now;
     nextSaccadeMs = random(550, 2400);
   }
+  gazeX += (targetGazeX - gazeX) * 0.11f;
+  gazeY += (targetGazeY - gazeY) * 0.11f;
 
   if (autoMode && now >= nextAutonomyMs && menuMode == MENU_NONE) {
     int roll = random(0, 100);
@@ -673,6 +779,40 @@ void setAutoMode(bool enabled) {
   speechScroll = 0;
 }
 
+void handleAutoTap() {
+  lastEvent = "tap";
+  nextAutonomyMs = millis() + random(7000, 16000);
+  targetGazeX = random(-10, 11);
+  targetGazeY = random(-8, 9);
+
+  if (currentMood == MOOD_SLEEPY) {
+    currentMood = MOOD_SURPRISED;
+    speechLine = "I am awake. Mostly. What did I miss?";
+    statusLine = "woken";
+    startBlink(false);
+  } else {
+    int roll = random(0, 100);
+    if (roll < 22) {
+      currentMood = MOOD_HAPPY;
+      speechLine = "Okay, okay, I am paying attention.";
+      startBlink(false);
+    } else if (roll < 44) {
+      currentMood = MOOD_SUSPICIOUS;
+      speechLine = "You poked the interface. Bold choice.";
+    } else if (roll < 64) {
+      currentMood = MOOD_EXCITED;
+      speakMoodPhrase(currentMood);
+    } else if (roll < 82) {
+      startBlink(true, random(0, 2) == 0);
+      speechLine = "Yes?";
+    } else {
+      speakMoodPhrase(currentMood);
+    }
+    statusLine = "auto tap";
+  }
+  speechScroll = 0;
+}
+
 void handleMenuItem(int item) {
   if (item < 0 || item > 4) {
     backMenu();
@@ -732,8 +872,7 @@ void handleMenuItem(int item) {
     if (item == 0) startBlink(false);
     else if (item == 1) startBlink(true, random(0, 2) == 0);
     else if (item == 2) {
-      pupilColor = pupilColor == TFT_NAVY ? TFT_BLACK : TFT_NAVY;
-      statusLine = "pupil color";
+      cyclePupilColor();
     } else if (item == 3) {
       applyRotation(displayRotation + 1, true);
       statusLine = "rotation changed";
@@ -754,17 +893,12 @@ void handleMenuItem(int item) {
       moodEyeColorEnabled = true;
       statusLine = "eye color default";
     } else if (item == 1) {
-      moodEyeColorEnabled = false;
-      eyeColor = TFT_CYAN;
-      statusLine = "eye color cyan";
+      cycleEyeColor();
     } else if (item == 2) {
-      moodEyeColorEnabled = false;
-      eyeColor = TFT_GREENYELLOW;
-      statusLine = "eye color green";
+      cyclePupilColor();
     } else if (item == 3) {
-      moodEyeColorEnabled = false;
-      eyeColor = TFT_ORANGE;
-      statusLine = "eye color amber";
+      shineColor = shineColor == TFT_WHITE ? TFT_LIGHTGREY : TFT_WHITE;
+      statusLine = "eye shine";
     }
   }
   speechScroll = 0;
@@ -808,9 +942,13 @@ void handleTouch() {
     } else if (isUpperRightHotspot(lastTouchX, lastTouchY)) {
       openMenu(MENU_FACE);
     } else {
-      currentMood = (Mood)((currentMood + 1) % MOOD_COUNT);
-      statusLine = String("manual: ") + moodNames[currentMood];
-      startBlink(false);
+      if (autoMode) {
+        handleAutoTap();
+      } else {
+        currentMood = (Mood)((currentMood + 1) % MOOD_COUNT);
+        statusLine = String("manual: ") + moodNames[currentMood];
+        startBlink(false);
+      }
     }
   }
 
@@ -837,6 +975,13 @@ void handleSerialLine(String line) {
     setAutoMode(false);
   } else if (lower == "speak") {
     speakMoodPhrase(currentMood);
+  } else if (lower == "tap") {
+    if (autoMode) handleAutoTap();
+    else {
+      currentMood = (Mood)((currentMood + 1) % MOOD_COUNT);
+      statusLine = String("manual: ") + moodNames[currentMood];
+      startBlink(false);
+    }
   } else if (lower.startsWith("eye color ")) {
     String color = lower.substring(10);
     if (color == "default" || color == "auto") {
@@ -844,13 +989,15 @@ void handleSerialLine(String line) {
       statusLine = "eye color default";
     } else {
       moodEyeColorEnabled = false;
-      if (color == "green") eyeColor = TFT_GREENYELLOW;
-      else if (color == "amber" || color == "orange") eyeColor = TFT_ORANGE;
-      else if (color == "pink") eyeColor = TFT_PINK;
-      else if (color == "blue") eyeColor = TFT_SKYBLUE;
-      else eyeColor = TFT_CYAN;
-      statusLine = "eye color fixed";
+      eyeColorIndex = colorIndexFromName(color, eyeColorIndex);
+      eyeColor = colorFromName(color, COLOR_CHOICES[eyeColorIndex]);
+      statusLine = String("eye: ") + color;
     }
+  } else if (lower.startsWith("pupil color ")) {
+    String color = lower.substring(12);
+    pupilColorIndex = colorIndexFromName(color, pupilColorIndex);
+    pupilColor = colorFromName(color, COLOR_CHOICES[pupilColorIndex]);
+    statusLine = String("pupil: ") + color;
   } else if (lower.startsWith("say ")) {
     speechLine = line.substring(4);
     statusLine = "speaking";
@@ -978,7 +1125,7 @@ String menuItemLabel(int i) {
     return a[i];
   }
   if (menuMode == MENU_FACE_COLORS) {
-    const char* a[] = {"Default", "Cyan", "Green", "Amber"};
+    const char* a[] = {"Mood color", "Next eye", "Next pupil", "Shine"};
     return a[i];
   }
   return "";
@@ -1022,9 +1169,6 @@ void drawFrame() {
 
   if (currentMood == MOOD_SLEEPY) {
     drawZzz(screenW - 62, max(24, screenH / 8), TFT_LIGHTGREY);
-  } else if (currentMood == MOOD_ANGRY) {
-    frame.drawLine(screenW / 2 - 32, screenH / 5, screenW / 2 - 6, screenH / 8, TFT_RED);
-    frame.drawLine(screenW / 2 + 6, screenH / 8, screenW / 2 + 32, screenH / 5, TFT_RED);
   }
 
   drawEye(leftEye, true);
@@ -1068,7 +1212,7 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, blink, wink, sd status, phrase add <mood> <phrase>");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, blink, wink, auto, manual, speak, eye color <name|default>, pupil color <name>, sd status, phrase add <mood> <phrase>");
 }
 
 void loop() {
