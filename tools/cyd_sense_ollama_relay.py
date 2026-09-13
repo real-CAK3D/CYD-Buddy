@@ -200,8 +200,9 @@ def main() -> int:
     parser.add_argument("--model", default="gemma4:latest")
     parser.add_argument("--no-ollama", action="store_true")
     parser.add_argument("--no-cyd", action="store_true")
-    parser.add_argument("--capture-interval", type=float, default=8.0)
+    parser.add_argument("--capture-interval", type=float, default=45.0)
     parser.add_argument("--ai-cooldown", type=float, default=8.0)
+    parser.add_argument("--active", action="store_true", help="Use hotter/faster S3 sensing instead of cool snapshot mode.")
     parser.add_argument("--duration", type=float, default=0.0, help="Optional run length in seconds.")
     args = parser.parse_args()
 
@@ -227,7 +228,7 @@ def main() -> int:
     reader.start()
 
     time.sleep(0.8)
-    xiao.write_line("stream on")
+    xiao.write_line("active" if args.active else "cool")
     xiao.write_line("init")
 
     print("[relay] running; Ctrl+C to stop")

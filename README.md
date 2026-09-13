@@ -174,8 +174,8 @@ The XIAO and CYD are good for tiny classifiers and reflex behavior. They are not
 When both boards are powered from a power bank, they can work without NukeBox or Wi-Fi:
 
 - XIAO advertises over BLE as `CYD-Sense`.
-- CYD scans for that BLE service and subscribes to sensor events.
-- XIAO initializes its camera/mic automatically on boot.
+- Direct CYD-to-XIAO BLE is currently paused on the CYD because ESP32 BLE client attach was unstable.
+- XIAO initializes its camera/mic automatically on boot, but now defaults to cool snapshot mode instead of continuous event streaming.
 - XIAO sends tiny/reflex events such as:
   - `event sound:loud level=...`
   - `event sound:quiet`
@@ -183,15 +183,17 @@ When both boards are powered from a power bank, they can work without NukeBox or
   - `event vision:motion`
   - `event vision:dark`
   - `event vision:busy`
-- CYD maps those events into moods and phrases locally.
-- CYD can also send settings back to XIAO over BLE:
-  - `connect`
-  - `capture`
-  - `threshold <level>`
-  - `stream on`
-  - `stream off`
-  - `remember <name>`
-  - `forget person`
+- CYD maps those events into moods and phrases locally when events arrive by serial/relay.
+
+The XIAO Sense can get hot if the camera/mic are treated like a live stream. Use snapshot mode by default:
+
+```text
+cool
+capture
+status
+```
+
+Use `active` only for short tests; it samples faster and runs hotter.
 
 This is the first tiny-AI layer. It is not a full LLM on-device; it is an offline reflex/classifier layer that makes the buddy portable. Rich chat, weather, online info, and longer reasoning still use Ollama/OpenAI when a relay is available.
 
@@ -211,11 +213,14 @@ ollama host <url>
 xiao <command>
 xiao connect
 remember me as <name>
+phrase seed
 ```
 
 The password is saved locally in ESP32 preferences and is not printed by `wifi status`.
 
-When CYD is on a phone hotspot, home Wi-Fi, or any network that can reach Tailscale/Ollama, the PC relay can use `wifi status`, `ollama host`, and normal `say`/`event` commands to give the buddy accurate time, weather, and richer AI responses. Offline, CYD keeps using the XIAO BLE sensor events and local phrase/mood logic.
+When CYD is on a phone hotspot, home Wi-Fi, or any network that can reach Tailscale/Ollama, the PC relay can use `wifi status`, `ollama host`, and normal `say`/`event` commands to give the buddy accurate time, weather, and richer AI responses. While direct BLE is paused, use the relay to pass XIAO snapshot events into CYD.
+
+`phrase seed` appends 50 generated phrases per mood to `/cydbuddy/phrases.csv` on the CYD SD card. It does not reformat the SD card or touch other directories.
 
 ## Remembered Person
 

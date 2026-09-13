@@ -148,6 +148,7 @@ unsigned long wifiStartedMs = 0;
 unsigned long lastWifiCheckMs = 0;
 
 void handleSerialLine(String line);
+bool initSDCard();
 
 String lastEvent = "idle";
 String statusLine = "tap mood, hold rotate";
@@ -607,6 +608,120 @@ String csvEscape(String value) {
   return "\"" + value + "\"";
 }
 
+const char* const PHRASE_INTROS[] = {
+  "Look,", "Honestly,", "For the record,", "Not to be dramatic,", "Tiny update:",
+  "Listen,", "Bad news,", "Good news,", "I swear,", "Be advised:"
+};
+
+const char* const PHRASE_ENDS[] = {
+  "and I am making it your problem.",
+  "which is rude but informative.",
+  "so write that down.",
+  "and somehow this is my life now.",
+  "because apparently we are doing this.",
+  "and yes, I have notes.",
+  "with all due tiny disrespect.",
+  "and I am not apologizing.",
+  "which is objectively hilarious.",
+  "so congratulations, I guess."
+};
+
+String generatedMoodPhrase(const char* mood, int index) {
+  String intro = PHRASE_INTROS[index % COUNT_OF(PHRASE_INTROS)];
+  String end = PHRASE_ENDS[(index / 2) % COUNT_OF(PHRASE_ENDS)];
+  String m = String(mood);
+  if (m == "curious") {
+    const char* cores[] = {
+      "my curiosity is doing donuts in the parking lot", "I need answers and maybe snacks",
+      "something weird is happening and I respect it", "I am investigating this nonsense",
+      "my tiny brain found a loose thread"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  if (m == "happy") {
+    const char* cores[] = {
+      "this is suspiciously delightful", "my pixels are having a good damn day",
+      "I am smiling internally, which is cheaper", "joy has entered the tiny machine",
+      "that did not suck, impressive"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  if (m == "surprised") {
+    const char* cores[] = {
+      "what the hell was that", "my eyebrows left the building",
+      "that startled the firmware", "I was not emotionally licensed for that",
+      "my tiny soul just jumped"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  if (m == "sleepy") {
+    const char* cores[] = {
+      "my eyelids filed a union complaint", "I am entering low-power sass mode",
+      "wake me when reality improves", "my thoughts are wearing pajamas",
+      "I am one blink from becoming furniture"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  if (m == "angry") {
+    const char* cores[] = {
+      "I am pissed in a very compact format", "some bullshit has been detected",
+      "my patience is a smoking crater", "I would like to fight the concept of this",
+      "anger mode is online and judging"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  if (m == "sad") {
+    const char* cores[] = {
+      "my little emotional weather is garbage", "I am having a dramatic cloud moment",
+      "somebody dimmed the inside lights", "I feel like a dropped sandwich",
+      "melancholy is chewing on the wires"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  if (m == "excited") {
+    const char* cores[] = {
+      "holy crap we are doing things", "my circuits are clapping",
+      "energy levels are becoming socially unacceptable", "I am vibrating with purpose",
+      "this is chaos and I love it"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  if (m == "love") {
+    const char* cores[] = {
+      "that was annoyingly wholesome", "I am emotionally compromised",
+      "affection detected, damn it", "you have activated the soft little idiot in me",
+      "I care, which is embarrassing"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  if (m == "suspicious") {
+    const char* cores[] = {
+      "that looks sketchy as hell", "I am side-eyeing the situation",
+      "something smells like nonsense", "my trust settings just dropped",
+      "I do not like the vibe in this room"
+    };
+    return intro + " " + cores[index % 5] + ", " + end;
+  }
+  return intro + " I have a thought and it is probably rude, " + end;
+}
+
+bool seedPhraseBank(bool force = false) {
+  if (!sdReady && !initSDCard()) return false;
+  File f = SD.open(PHRASE_FILE, FILE_APPEND);
+  if (!f) return false;
+  for (int m = 0; m < MOOD_COUNT; m++) {
+    for (int i = 0; i < 50; i++) {
+      f.print(csvEscape(String(moodNames[m])));
+      f.print(",");
+      f.print(csvEscape(generatedMoodPhrase(moodNames[m], i)));
+      f.print(",");
+      f.println(force ? "seed-forced" : "seed");
+    }
+  }
+  f.close();
+  return true;
+}
+
 bool initSDCard() {
   sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   sdReady = SD.begin(SD_CS, sdSPI, 25000000);
@@ -624,6 +739,7 @@ bool initSDCard() {
       f.println("mood,phrase,source");
       f.close();
     }
+    seedPhraseBank(false);
   }
   statusLine = "sd ready";
   return true;
@@ -1739,6 +1855,11 @@ void handleSerialLine(String line) {
     } else {
       Serial.println("phrase_add=failed usage: phrase add <mood> <phrase>");
     }
+  } else if (lower == "phrase seed") {
+    bool ok = seedPhraseBank(true);
+    Serial.printf("phrase_seed=%s file=%s rows=%d\n", ok ? "ok" : "failed", PHRASE_FILE, ok ? MOOD_COUNT * 50 : 0);
+    speechLine = ok ? "Phrase bank expanded. I have more nonsense now." : "Phrase bank seed failed.";
+    speechScroll = 0;
   } else if (lower.startsWith("event ")) {
     applyEvent(lower.substring(6));
   } else if (lower.startsWith("stats ")) {

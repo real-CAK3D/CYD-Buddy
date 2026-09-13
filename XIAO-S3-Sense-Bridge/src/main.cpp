@@ -31,7 +31,7 @@ static const int MIC_CLK = 42;
 static const i2s_port_t MIC_PORT = I2S_NUM_0;
 
 static const int LED_PIN = 21; // active-low user LED on XIAO ESP32S3
-static const int SAMPLE_COUNT = 512;
+static const int SAMPLE_COUNT = 256;
 static const char* BLE_NAME = "CYD-Sense";
 static BLEUUID BUDDY_SERVICE_UUID("7a2f0001-44b8-4f2a-9c4f-c0d000000001");
 static BLEUUID BUDDY_EVENT_UUID("7a2f0002-44b8-4f2a-9c4f-c0d000000002");
@@ -39,10 +39,11 @@ static BLEUUID BUDDY_COMMAND_UUID("7a2f0003-44b8-4f2a-9c4f-c0d000000003");
 
 bool cameraReady = false;
 bool micReady = false;
-bool streamEvents = true;
+bool streamEvents = false;
 bool sensorInitAttempted = false;
 bool bleClientConnected = false;
 bool bleNeedsAdvertising = false;
+bool coolMode = true;
 unsigned long lastSensorMs = 0;
 unsigned long lastHeartbeatMs = 0;
 unsigned long lastVisionMs = 0;
@@ -50,6 +51,8 @@ unsigned long lastBleAdvertiseMs = 0;
 unsigned long lastBleNotifyMs = 0;
 int loudThreshold = 900;
 int quietThreshold = 80;
+unsigned long micIntervalMs = 1500;
+unsigned long visionIntervalMs = 45000;
 int lastFrameBytes = 0;
 int stableQuietCount = 0;
 int rememberedSignature = 0;
@@ -208,11 +211,11 @@ bool initCamera() {
   config.pin_sccb_scl = CAM_SIOC;
   config.pin_pwdn = CAM_PWDN;
   config.pin_reset = CAM_RESET;
-  config.xclk_freq_hz = 20000000;
+  config.xclk_freq_hz = 10000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = psramFound() ? FRAMESIZE_QVGA : FRAMESIZE_QQVGA;
-  config.jpeg_quality = 16;
-  config.fb_count = psramFound() ? 2 : 1;
+  config.frame_size = FRAMESIZE_QQVGA;
+  config.jpeg_quality = 24;
+  config.fb_count = 1;
   config.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
 
@@ -240,7 +243,7 @@ bool initMic() {
   config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
   config.dma_buf_count = 4;
-  config.dma_buf_len = 256;
+  config.dma_buf_len = 128;
   config.use_apll = false;
   config.tx_desc_auto_clear = false;
   config.fixed_mclk = 0;
@@ -355,11 +358,14 @@ void handleCommand(String line) {
 
   if (lower == "status") {
     printJsonStatus("status");
-    Serial.printf("remembered=%s sig=%d threshold=%d stream=%s ble=%s\n",
+    Serial.printf("remembered=%s sig=%d threshold=%d stream=%s mode=%s mic_ms=%lu vision_ms=%lu ble=%s\n",
                   rememberedName.length() ? rememberedName.c_str() : "none",
                   rememberedSignature,
                   loudThreshold,
                   streamEvents ? "on" : "off",
+                  coolMode ? "cool" : "active",
+                  micIntervalMs,
+                  visionIntervalMs,
                   bleClientConnected ? "connected" : "advertising");
   } else if (lower == "init") {
     initSensors();
@@ -374,6 +380,18 @@ void handleCommand(String line) {
   } else if (lower.startsWith("threshold ")) {
     loudThreshold = max(10, (int)lower.substring(10).toInt());
     Serial.printf("threshold=%d\n", loudThreshold);
+  } else if (lower == "cool") {
+    coolMode = true;
+    streamEvents = false;
+    micIntervalMs = 1500;
+    visionIntervalMs = 45000;
+    Serial.println("mode=cool stream=off mic_ms=1500 vision_ms=45000");
+  } else if (lower == "active") {
+    coolMode = false;
+    streamEvents = true;
+    micIntervalMs = 500;
+    visionIntervalMs = 15000;
+    Serial.println("mode=active stream=on mic_ms=500 vision_ms=15000");
   } else if (lower.startsWith("remember ")) {
     rememberPerson(line.substring(9));
   } else if (lower == "forget me" || lower == "forget person") {
@@ -386,7 +404,7 @@ void handleCommand(String line) {
     Serial.println("remember=cleared");
     publishBuddyEvent("event remember:cleared");
   } else if (lower == "help") {
-    Serial.println("commands: status, init, capture, stream on, stream off, threshold <level>, remember <name>, forget person, help");
+    Serial.println("commands: status, init, capture, stream on, stream off, cool, active, threshold <level>, remember <name>, forget person, help");
   } else {
     Serial.println("unknown command; try help");
   }
@@ -421,7 +439,7 @@ void setup() {
   loadPersonMemory();
   beginBle();
   printJsonStatus("boot");
-  Serial.println("commands: status, init, capture, stream on, stream off, threshold <level>, remember <name>, forget person, help");
+  Serial.println("commands: status, init, capture, stream on, stream off, cool, active, threshold <level>, remember <name>, forget person, help");
   initSensors();
   led(false);
 }
@@ -435,26 +453,26 @@ void loop() {
     lastHeartbeatMs = now;
   }
 
-  if (sensorInitAttempted && now - lastSensorMs >= 250) {
+  if (sensorInitAttempted && now - lastSensorMs >= micIntervalMs) {
     lastSensorMs = now;
     int level = readMicLevel();
     if (level >= 0) {
       if (streamEvents && level > loudThreshold) {
         publishBuddyEvent(String("event sound:loud level=") + level);
-      } else if (level < quietThreshold) {
+      } else if (streamEvents && level < quietThreshold) {
         stableQuietCount++;
         if (stableQuietCount > 28 && random(0, 80) == 0) publishBuddyEvent("event sound:quiet");
       } else {
         stableQuietCount = 0;
       }
-      if (now - lastHeartbeatMs > 2000) {
+      if (!coolMode && now - lastHeartbeatMs > 4000) {
         printJsonStatus("mic", level);
         lastHeartbeatMs = now;
       }
     }
   }
 
-  if (sensorInitAttempted && cameraReady && now - lastVisionMs > 9000) {
+  if (sensorInitAttempted && cameraReady && now - lastVisionMs > visionIntervalMs) {
     lastVisionMs = now;
     captureTinyVisionEvent();
   }
