@@ -1,0 +1,27 @@
+# CYD Buddy portable voice command vocabulary.
+#
+# ESP-SR MultiNet6 can use grapheme commands. MultiNet7 may need phonemes
+# generated with Espressif's multinet_g2p.py tool. Keep command IDs aligned
+# with main/main.c COMMAND_EVENTS.
+#
+# id,command
+1,TAKE A PICTURE
+2,LOOK AROUND
+3,WHAT DO YOU SEE
+4,TELL ME A JOKE
+5,SAY SOMETHING RUDE
+6,BE NICE
+7,BE SARCASTIC
+8,BE QUIET
+9,TALK MORE
+10,WAKE UP
+11,GO TO SLEEP
+12,HAPPY MODE
+13,SAD MODE
+14,ANGRY MODE
+15,SUSPICIOUS MODE
+16,LOVE MODE
+17,REMEMBER ME
+18,FORGET ME
+19,CONNECT WIFI
+20,STATUS

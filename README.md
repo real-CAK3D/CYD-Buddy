@@ -136,6 +136,35 @@ The bridge prints `BUDDY event ...` lines that can be relayed into the CYD firmw
 
 For the portable voice target, the XIAO mic must run local speech recognition. The planned path is a separate ESP-IDF/ESP-SR firmware using WakeNet for wake-word detection and MultiNet for offline command phrases. See [Portable Voice Architecture](docs/portable_voice_architecture.md).
 
+## XIAO Portable Voice Target
+
+- Firmware: `XIAO-S3-Sense-Voice-ESP-IDF`
+- Framework: ESP-IDF with ESP-SR
+- Current role: starter target for battery-only wake word and offline command phrases.
+
+This target is intentionally separate from the Arduino bridge so the current camera/mic sensor firmware stays usable while portable voice is brought up.
+
+The offline command vocabulary starts in:
+
+```text
+XIAO-S3-Sense-Voice-ESP-IDF/commands_en.txt
+```
+
+The first event format is serial text:
+
+```text
+event voice:wake
+event voice:cmd take_picture id=1 prob=0.95
+```
+
+Build helper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\setup_xiao_voice_idf.ps1 -Port COM7
+```
+
+This requires an ESP-IDF shell with ESP-SR/ESP-Skainet dependencies available. The helper currently reports that ESP-IDF is not active in this Windows shell.
+
 ## Dev Relay With Ollama
 
 Run this on the Windows host while both boards are plugged in. This is a development bridge, not the final portable voice path:
@@ -202,6 +231,7 @@ Good future onboard model targets:
 - XIAO: ESP-SR WakeNet wake word, ESP-SR MultiNet command phrases, clap/loud/quiet classifier, face/person/motion detection, simple visual mood cues.
 - CYD: rule-based mood memory, phrase selection, touch habits, low-cost personality state.
 - Ollama/OpenAI: full conversation, tool use, web/weather/system context, longer memory summaries.
+- Optional ESP32 devboard: useful later as an audio/speaker board, simple UART/BLE/Wi-Fi bridge, or debug middleman; not the main STT board.
 
 The XIAO and CYD are good for wake words, fixed speech commands, tiny classifiers, and reflex behavior. They are not practical targets for full open-ended dictation or a Gemma-style LLM; that stays on NukeBox/Ollama or OpenAI when Wi-Fi is available.
 

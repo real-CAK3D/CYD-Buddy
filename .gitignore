@@ -1,6 +1,10 @@
 # PlatformIO build and package caches
 .pio/
 .pio-core/
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
 
 # Local editor and OS noise
 .vscode/
@@ -19,4 +23,3 @@ Edison-DeskBuddy-src/
 *.key
 *.pem
 *.token
-
