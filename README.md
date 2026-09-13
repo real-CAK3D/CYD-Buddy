@@ -37,6 +37,11 @@ menu face
 menu close
 sd status
 phrase add <mood> <phrase>
+auto
+manual
+speak
+eye color default
+eye color amber
 say <text to show on the speech line>
 ```
 
@@ -45,11 +50,14 @@ say <text to show on the speech line>
 - Upper-left hotspot opens the system menu.
 - Upper-right hotspot opens the face menu.
 - Menu rows are selectable.
-- Back closes the menu.
+- Rows can open submenus.
+- Back returns to the previous menu or closes the current top-level menu.
+- Face menus include auto/manual mode and default/fixed eye color choices.
+- System menus include the SD phrase bank and placeholders for XIAO, AI model, and Wi-Fi bridge setup.
 
 ## Next Steps
 
-- Add full phrase-bank loading/random selection from `/cydbuddy/phrases.csv`.
+- Expand the phrase bank to 50+ phrases per mood.
 - Add an on-screen phrase editor/keyboard.
 - Add the XIAO ESP32S3 Sense as a camera/mic sensor node.
 - Bridge sensor events and local Gemma output into the CYD over serial, Wi-Fi, BLE, or a local host bridge.

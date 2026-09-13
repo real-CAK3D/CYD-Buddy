@@ -59,7 +59,14 @@ enum Mood {
 enum MenuMode {
   MENU_NONE,
   MENU_SYSTEM,
-  MENU_FACE
+  MENU_FACE,
+  MENU_SYSTEM_XIAO,
+  MENU_SYSTEM_AI,
+  MENU_SYSTEM_WIFI,
+  MENU_SYSTEM_PHRASES,
+  MENU_FACE_EYES,
+  MENU_FACE_MOODS,
+  MENU_FACE_COLORS
 };
 
 const char* moodNames[] = {
@@ -69,9 +76,12 @@ const char* moodNames[] = {
 
 Mood currentMood = MOOD_NORMAL;
 MenuMode menuMode = MENU_NONE;
+bool autoMode = true;
+bool moodEyeColorEnabled = true;
 unsigned long lastSaccade = 0;
 unsigned long nextSaccadeMs = 900;
 unsigned long lastMoodAuto = 0;
+unsigned long nextAutonomyMs = 0;
 unsigned long lastTouchMs = 0;
 unsigned long touchStarted = 0;
 bool touchWasDown = false;
@@ -139,6 +149,7 @@ Eye leftEye;
 Eye rightEye;
 
 uint16_t moodEyeColor() {
+  if (!moodEyeColorEnabled) return eyeColor;
   switch (currentMood) {
     case MOOD_HAPPY: return TFT_GREENYELLOW;
     case MOOD_SURPRISED: return TFT_SKYBLUE;
@@ -200,6 +211,84 @@ bool appendPhrase(String mood, String phrase, String source = "user") {
   f.close();
   statusLine = "phrase saved";
   return true;
+}
+
+String csvField(String line, int wanted) {
+  int field = 0;
+  bool quoted = false;
+  String out;
+  for (int i = 0; i < line.length(); i++) {
+    char c = line[i];
+    if (quoted) {
+      if (c == '"') {
+        if (i + 1 < line.length() && line[i + 1] == '"') {
+          if (field == wanted) out += '"';
+          i++;
+        } else {
+          quoted = false;
+        }
+      } else if (field == wanted) {
+        out += c;
+      }
+    } else {
+      if (c == '"') {
+        quoted = true;
+      } else if (c == ',') {
+        if (field == wanted) return out;
+        field++;
+      } else if (field == wanted) {
+        out += c;
+      }
+    }
+  }
+  return field == wanted ? out : "";
+}
+
+String fallbackPhraseForMood(Mood mood) {
+  switch (mood) {
+    case MOOD_HAPPY: return "Fine. I admit it. This is kind of delightful.";
+    case MOOD_SURPRISED: return "Something happened, and I have questions.";
+    case MOOD_SLEEPY: return "Wake me when the plot gets better.";
+    case MOOD_ANGRY: return "I am not mad. I am artistically irritated.";
+    case MOOD_SAD: return "I am having a small dramatic cloud moment.";
+    case MOOD_EXCITED: return "Okay, now we are doing something interesting.";
+    case MOOD_LOVE: return "That was unexpectedly wholesome.";
+    case MOOD_SUSPICIOUS: return "I am watching that. Politely. Mostly.";
+    default: return "I am thinking tiny electric thoughts.";
+  }
+}
+
+String randomPhraseForMood(Mood mood) {
+  if (!sdReady && !initSDCard()) return fallbackPhraseForMood(mood);
+  File f = SD.open(PHRASE_FILE, FILE_READ);
+  if (!f) return fallbackPhraseForMood(mood);
+
+  String wanted = moodNames[mood];
+  String chosen;
+  int matches = 0;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0 || line.startsWith("mood,")) continue;
+    String m = csvField(line, 0);
+    m.trim();
+    m.toLowerCase();
+    if (m == wanted || m == "all") {
+      matches++;
+      if (random(matches) == 0) {
+        chosen = csvField(line, 1);
+      }
+    }
+  }
+  f.close();
+  if (chosen.length() == 0) return fallbackPhraseForMood(mood);
+  return chosen;
+}
+
+void speakMoodPhrase(Mood mood) {
+  speechLine = randomPhraseForMood(mood);
+  speechScroll = 0;
+  statusLine = "speaking";
 }
 
 void printSDStatus() {
@@ -390,6 +479,16 @@ void updateBuddy() {
     nextSaccadeMs = random(550, 2400);
   }
 
+  if (autoMode && now >= nextAutonomyMs && menuMode == MENU_NONE) {
+    int roll = random(0, 100);
+    if (roll < 55) {
+      currentMood = (Mood)random(0, MOOD_COUNT);
+      statusLine = String("auto: ") + moodNames[currentMood];
+    }
+    speakMoodPhrase(currentMood);
+    nextAutonomyMs = now + random(18000, 48000);
+  }
+
   chooseMoodTargets();
   leftEye.update();
   rightEye.update();
@@ -542,53 +641,130 @@ int menuItemAt(int tx, int ty) {
 
 void openMenu(MenuMode mode) {
   menuMode = mode;
-  if (mode == MENU_SYSTEM) {
-    statusLine = "system menu";
-  } else if (mode == MENU_FACE) {
-    statusLine = "face menu";
+  if (mode == MENU_SYSTEM) statusLine = "system menu";
+  else if (mode == MENU_FACE) statusLine = "face menu";
+  else if (mode == MENU_FACE_COLORS) statusLine = "eye color menu";
+  else if (mode == MENU_FACE_MOODS) statusLine = "mood menu";
+  else if (mode == MENU_FACE_EYES) statusLine = "eyes menu";
+  else if (mode == MENU_SYSTEM_PHRASES) statusLine = "phrase menu";
+  else statusLine = "submenu";
+}
+
+void backMenu() {
+  if (menuMode == MENU_SYSTEM_XIAO || menuMode == MENU_SYSTEM_AI || menuMode == MENU_SYSTEM_WIFI || menuMode == MENU_SYSTEM_PHRASES) {
+    openMenu(MENU_SYSTEM);
+  } else if (menuMode == MENU_FACE_EYES || menuMode == MENU_FACE_MOODS || menuMode == MENU_FACE_COLORS) {
+    openMenu(MENU_FACE);
+  } else {
+    menuMode = MENU_NONE;
+    statusLine = "menu closed";
   }
+}
+
+void setAutoMode(bool enabled) {
+  autoMode = enabled;
+  statusLine = enabled ? "auto mode" : "manual mode";
+  if (enabled) {
+    nextAutonomyMs = millis() + 2500;
+    speechLine = "Auto mode online. I will have opinions.";
+  } else {
+    speechLine = "Manual mode. I will behave. Mostly.";
+  }
+  speechScroll = 0;
 }
 
 void handleMenuItem(int item) {
   if (item < 0 || item > 4) {
-    menuMode = MENU_NONE;
-    statusLine = "menu closed";
+    backMenu();
     return;
   }
 
   if (item == 4) {
-    menuMode = MENU_NONE;
-    statusLine = "menu closed";
+    backMenu();
     return;
   }
 
   if (menuMode == MENU_SYSTEM) {
+    if (item == 0) openMenu(MENU_SYSTEM_XIAO);
+    else if (item == 1) openMenu(MENU_SYSTEM_AI);
+    else if (item == 2) openMenu(MENU_SYSTEM_WIFI);
+    else if (item == 3) openMenu(MENU_SYSTEM_PHRASES);
+  } else if (menuMode == MENU_SYSTEM_XIAO) {
     if (item == 0) {
-      statusLine = "xiao pending";
       speechLine = "Plug in the XIAO Sense when you are ready.";
     } else if (item == 1) {
-      statusLine = "ai model";
+      speechLine = "XIAO will send face, motion, sound, and vision events.";
+    } else if (item == 2) {
+      speechLine = "Bluetooth events are planned after the sensor firmware.";
+    } else if (item == 3) {
+      speechLine = "WiFi bridge is better for camera and audio payloads.";
+    }
+  } else if (menuMode == MENU_SYSTEM_AI) {
+    if (item == 0) {
       speechLine = "Local Gemma bridge will live here.";
     } else if (item == 2) {
-      statusLine = "wifi bridge";
-      speechLine = "WiFi bridge setup will live here.";
+      speechLine = "Gemma can rewrite phrases and send new speech lines.";
     } else if (item == 3) {
-      statusLine = sdReady ? "phrase bank ready" : "phrase bank missing";
-      speechLine = sdReady ? "Phrases are stored in /cydbuddy/phrases.csv." : "SD card not mounted yet.";
+      speakMoodPhrase(currentMood);
+    }
+  } else if (menuMode == MENU_SYSTEM_WIFI) {
+    if (item == 0) speechLine = "WiFi setup page is next.";
+    else if (item == 1) speechLine = "Host bridge will connect CYD, XIAO, and Gemma.";
+    else if (item == 2) speechLine = "BLE is for small events. WiFi is for camera and audio.";
+    else if (item == 3) speechLine = "No WiFi credentials are stored yet.";
+  } else if (menuMode == MENU_SYSTEM_PHRASES) {
+    if (item == 0) {
+      speechLine = sdReady ? "Phrase bank ready at /cydbuddy/phrases.csv." : "SD card not mounted.";
+    } else if (item == 1) {
+      speakMoodPhrase(currentMood);
+    } else if (item == 2) {
+      bool ok = appendPhrase(moodNames[currentMood], fallbackPhraseForMood(currentMood), "seed");
+      speechLine = ok ? "Seed phrase saved for this mood." : "Could not save phrase.";
+    } else if (item == 3) {
+      speechLine = "On-screen phrase editor is next.";
     }
   } else if (menuMode == MENU_FACE) {
-    if (item == 0) {
-      currentMood = (Mood)((currentMood + 1) % MOOD_COUNT);
-      statusLine = String("mood: ") + moodNames[currentMood];
-    } else if (item == 1) {
-      startBlink(false);
-      statusLine = "blink test";
-    } else if (item == 2) {
+    if (item == 0) openMenu(MENU_FACE_EYES);
+    else if (item == 1) openMenu(MENU_FACE_MOODS);
+    else if (item == 2) openMenu(MENU_FACE_COLORS);
+    else if (item == 3) setAutoMode(!autoMode);
+  } else if (menuMode == MENU_FACE_EYES) {
+    if (item == 0) startBlink(false);
+    else if (item == 1) startBlink(true, random(0, 2) == 0);
+    else if (item == 2) {
       pupilColor = pupilColor == TFT_NAVY ? TFT_BLACK : TFT_NAVY;
       statusLine = "pupil color";
     } else if (item == 3) {
       applyRotation(displayRotation + 1, true);
       statusLine = "rotation changed";
+    }
+  } else if (menuMode == MENU_FACE_MOODS) {
+    if (item == 0) {
+      currentMood = (Mood)((currentMood + 1) % MOOD_COUNT);
+      statusLine = String("mood: ") + moodNames[currentMood];
+    } else if (item == 1) {
+      setAutoMode(true);
+    } else if (item == 2) {
+      setAutoMode(false);
+    } else if (item == 3) {
+      speakMoodPhrase(currentMood);
+    }
+  } else if (menuMode == MENU_FACE_COLORS) {
+    if (item == 0) {
+      moodEyeColorEnabled = true;
+      statusLine = "eye color default";
+    } else if (item == 1) {
+      moodEyeColorEnabled = false;
+      eyeColor = TFT_CYAN;
+      statusLine = "eye color cyan";
+    } else if (item == 2) {
+      moodEyeColorEnabled = false;
+      eyeColor = TFT_GREENYELLOW;
+      statusLine = "eye color green";
+    } else if (item == 3) {
+      moodEyeColorEnabled = false;
+      eyeColor = TFT_ORANGE;
+      statusLine = "eye color amber";
     }
   }
   speechScroll = 0;
@@ -655,6 +831,26 @@ void handleSerialLine(String line) {
     currentMood = moodFromName(lower.substring(5));
     statusLine = String("mood: ") + moodNames[currentMood];
     lastMoodAuto = millis();
+  } else if (lower == "auto") {
+    setAutoMode(true);
+  } else if (lower == "manual") {
+    setAutoMode(false);
+  } else if (lower == "speak") {
+    speakMoodPhrase(currentMood);
+  } else if (lower.startsWith("eye color ")) {
+    String color = lower.substring(10);
+    if (color == "default" || color == "auto") {
+      moodEyeColorEnabled = true;
+      statusLine = "eye color default";
+    } else {
+      moodEyeColorEnabled = false;
+      if (color == "green") eyeColor = TFT_GREENYELLOW;
+      else if (color == "amber" || color == "orange") eyeColor = TFT_ORANGE;
+      else if (color == "pink") eyeColor = TFT_PINK;
+      else if (color == "blue") eyeColor = TFT_SKYBLUE;
+      else eyeColor = TFT_CYAN;
+      statusLine = "eye color fixed";
+    }
   } else if (lower.startsWith("say ")) {
     speechLine = line.substring(4);
     statusLine = "speaking";
@@ -732,13 +928,64 @@ void drawSpeechStrip() {
   frame.drawString(shown, screenW / 2, y, 2);
 }
 
+const char* menuTitle() {
+  switch (menuMode) {
+    case MENU_SYSTEM: return "SYSTEM";
+    case MENU_FACE: return "FACE";
+    case MENU_SYSTEM_XIAO: return "XIAO";
+    case MENU_SYSTEM_AI: return "AI";
+    case MENU_SYSTEM_WIFI: return "BRIDGE";
+    case MENU_SYSTEM_PHRASES: return "PHRASES";
+    case MENU_FACE_EYES: return "EYES";
+    case MENU_FACE_MOODS: return "MOODS";
+    case MENU_FACE_COLORS: return "COLORS";
+    default: return "MENU";
+  }
+}
+
+String menuItemLabel(int i) {
+  if (i == 4) return "Back";
+  if (menuMode == MENU_SYSTEM) {
+    const char* a[] = {"XIAO S3 Sense", "AI model", "WiFi bridge", "Phrase bank"};
+    return a[i];
+  }
+  if (menuMode == MENU_FACE) {
+    const char* a[] = {"Eyes", "Moods", "Eye color", autoMode ? "Manual mode" : "Auto mode"};
+    return a[i];
+  }
+  if (menuMode == MENU_SYSTEM_XIAO) {
+    const char* a[] = {"Connect info", "Event types", "Bluetooth", "WiFi bridge"};
+    return a[i];
+  }
+  if (menuMode == MENU_SYSTEM_AI) {
+    const char* a[] = {"Gemma bridge", "Voice input", "Rewrite phrases", "Speak phrase"};
+    return a[i];
+  }
+  if (menuMode == MENU_SYSTEM_WIFI) {
+    const char* a[] = {"WiFi setup", "Host bridge", "BLE vs WiFi", "Credentials"};
+    return a[i];
+  }
+  if (menuMode == MENU_SYSTEM_PHRASES) {
+    const char* a[] = {"SD status", "Speak phrase", "Save seed", "Editor soon"};
+    return a[i];
+  }
+  if (menuMode == MENU_FACE_EYES) {
+    const char* a[] = {"Blink", "Wink", "Pupil color", "Rotation"};
+    return a[i];
+  }
+  if (menuMode == MENU_FACE_MOODS) {
+    const char* a[] = {"Next mood", "Auto mode", "Manual mode", "Speak phrase"};
+    return a[i];
+  }
+  if (menuMode == MENU_FACE_COLORS) {
+    const char* a[] = {"Default", "Cyan", "Green", "Amber"};
+    return a[i];
+  }
+  return "";
+}
+
 void drawMenuOverlay() {
   if (menuMode == MENU_NONE) return;
-
-  const char* title = menuMode == MENU_SYSTEM ? "SYSTEM" : "FACE";
-  const char* itemsSystem[] = {"XIAO S3 Sense", "AI model", "WiFi bridge", "Phrase bank", "Back"};
-  const char* itemsFace[] = {"Next mood", "Blink test", "Pupil color", "Rotation", "Back"};
-  const char** items = menuMode == MENU_SYSTEM ? itemsSystem : itemsFace;
 
   int x, y, panelW, panelH;
   menuGeometry(menuMode, x, y, panelW, panelH);
@@ -747,12 +994,12 @@ void drawMenuOverlay() {
   frame.drawRoundRect(x, y, panelW, panelH, 10, menuMode == MENU_SYSTEM ? TFT_CYAN : TFT_MAGENTA);
   frame.setTextDatum(TL_DATUM);
   frame.setTextColor(menuMode == MENU_SYSTEM ? TFT_CYAN : TFT_MAGENTA, TFT_BLACK);
-  frame.drawString(title, x + 12, y + 10, 2);
+  frame.drawString(menuTitle(), x + 12, y + 10, 2);
   frame.setTextColor(TFT_WHITE, TFT_BLACK);
   for (int i = 0; i < 5; i++) {
     int rowY = y + 32 + i * 24;
     frame.drawRoundRect(x + 8, rowY - 2, panelW - 16, 22, 4, TFT_DARKGREY);
-    frame.drawString(String("> ") + items[i], x + 12, rowY, 2);
+    frame.drawString(String("> ") + menuItemLabel(i), x + 12, rowY, 2);
   }
   frame.setTextColor(TFT_DARKGREY, TFT_BLACK);
   frame.drawString("tap row to select", x + 12, y + panelH - 16, 2);
