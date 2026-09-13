@@ -345,7 +345,7 @@ def main() -> int:
     parser.add_argument("--capture-interval", type=float, default=3.0)
     parser.add_argument("--ai-cooldown", type=float, default=2.0)
     parser.add_argument("--active", action="store_true", help="Use hotter/faster S3 sensing instead of cool snapshot mode.")
-    parser.add_argument("--stt", choices=["off", "windows"], default="windows", help="Speech-to-text provider for spoken prompts.")
+    parser.add_argument("--stt", choices=["off", "windows"], default="off", help="Development speech-to-text provider for spoken prompts.")
     parser.add_argument("--stt-always", action="store_true", help="Continuously listen instead of waiting for a XIAO wake/speech event.")
     parser.add_argument("--listen-seconds", type=float, default=5.0, help="Seconds to listen for each speech prompt.")
     parser.add_argument("--stt-confidence", type=float, default=0.25, help="Minimum Windows dictation confidence.")

@@ -132,11 +132,13 @@ threshold 900
 help
 ```
 
-The bridge prints `BUDDY event ...` lines that can be relayed into the CYD firmware. The current wake-name feature records a lightweight mic-level signature of the spoken name; it is a wake trigger, not full speech-to-text.
+The bridge prints `BUDDY event ...` lines that can be relayed into the CYD firmware. The current Arduino wake-name feature records a lightweight mic-level signature of the spoken name; it is a temporary wake trigger, not real speech-to-text.
 
-## PC Relay With Ollama
+For the portable voice target, the XIAO mic must run local speech recognition. The planned path is a separate ESP-IDF/ESP-SR firmware using WakeNet for wake-word detection and MultiNet for offline command phrases. See [Portable Voice Architecture](docs/portable_voice_architecture.md).
 
-Run this on the Windows host while both boards are plugged in:
+## Dev Relay With Ollama
+
+Run this on the Windows host while both boards are plugged in. This is a development bridge, not the final portable voice path:
 
 ```powershell
 python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest
@@ -151,10 +153,10 @@ The relay:
 - forwards `BUDDY event ...` lines to the CYD as `event ...`
 - asks Ollama for short Gemma responses; set `OLLAMA_URL` or pass `--ollama-url`
 - sends Gemma text to the CYD as `say ...`
-- can use Windows speech recognition for spoken prompts
-- can use Windows/SAPI text-to-speech for replies when a speaker is available
+- can use Windows speech recognition for temporary spoken-prompt testing
+- can use Windows/SAPI text-to-speech for temporary reply testing
 
-Speech-to-text currently uses the Windows default microphone through the relay. The XIAO still provides wake/speech sensor events, but it does not stream raw audio yet. Wake-triggered listening is enabled by default:
+Dev speech-to-text currently uses the Windows default microphone through the relay. That is useful for testing Ollama conversations, but it is not the portable target. Wake-triggered listening is enabled by default:
 
 ```powershell
 python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest --stt windows
@@ -172,7 +174,7 @@ Text-to-speech is optional and off by default. To speak replies through Windows 
 python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest --stt windows --tts windows
 ```
 
-When a physical speaker is added to the buddy hardware, the same relay path can be redirected to that output path instead of the PC speakers.
+When a physical speaker is added to the buddy hardware, online TTS can be routed to that output path. For fully offline portable speech, prefer pre-rendered phrase audio on SD card or a dedicated audio/TTS module.
 
 For testing without the CYD:
 
@@ -191,17 +193,17 @@ python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model 
 
 The current working split is:
 
-- XIAO ESP32S3 Sense: eyes and ears, camera captures, mic levels, fast sensor events.
+- XIAO ESP32S3 Sense: eyes and ears, camera captures, mic levels, fast sensor events; future ESP-SR wake word and command recognition.
 - CYD Buddy: face, moods, touch personality, phrase display, persistent tiny memory counters.
 - NukeBox Ollama/Gemma: richer speech, chat personality, reasoning, weather/online/tool-backed answers through the PC relay.
 
 Good future onboard model targets:
 
-- XIAO: wake-word, clap/loud/quiet classifier, face/person/motion detection, simple visual mood cues.
+- XIAO: ESP-SR WakeNet wake word, ESP-SR MultiNet command phrases, clap/loud/quiet classifier, face/person/motion detection, simple visual mood cues.
 - CYD: rule-based mood memory, phrase selection, touch habits, low-cost personality state.
 - Ollama/OpenAI: full conversation, tool use, web/weather/system context, longer memory summaries.
 
-The XIAO and CYD are good for tiny classifiers and reflex behavior. They are not practical targets for a full Gemma-style LLM; that stays on NukeBox/Ollama or OpenAI.
+The XIAO and CYD are good for wake words, fixed speech commands, tiny classifiers, and reflex behavior. They are not practical targets for full open-ended dictation or a Gemma-style LLM; that stays on NukeBox/Ollama or OpenAI when Wi-Fi is available.
 
 ## Portable Offline Mode
 
@@ -232,6 +234,16 @@ status
 Use `active` only for short tests; it samples faster and runs hotter.
 
 This is the first tiny-AI layer. It is not a full LLM on-device; it is an offline reflex/classifier layer that makes the buddy portable. Rich chat, weather, online info, and longer reasoning still use Ollama/OpenAI when a relay is available.
+
+Portable voice target:
+
+- XIAO mic runs ESP-SR WakeNet for the wake word.
+- XIAO mic runs ESP-SR MultiNet for a fixed command phrase list.
+- XIAO sends recognized command events to CYD.
+- CYD answers from local phrase banks, moods, memory, and camera/mic events.
+- When Wi-Fi/Ollama is reachable, the same command can escalate to richer AI.
+
+Full arbitrary speech-to-text is not expected to run locally on the CYD/XIAO pair. Offline voice should be command recognition; online voice can be full dictation.
 
 ## CYD Wi-Fi and Online Bridge
 
