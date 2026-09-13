@@ -1,0 +1,22 @@
+# PlatformIO build and package caches
+.pio/
+.pio-core/
+
+# Local editor and OS noise
+.vscode/
+.idea/
+*.swp
+*.tmp
+Thumbs.db
+Desktop.ini
+
+# Local reference clones and experiments
+Deskbuddy-src/
+Edison-DeskBuddy-src/
+
+# Secrets and local environment
+.env
+*.key
+*.pem
+*.token
+
