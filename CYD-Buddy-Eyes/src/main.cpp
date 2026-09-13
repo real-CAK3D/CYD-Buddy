@@ -142,6 +142,7 @@ const char* COLOR_NAMES[] = {
   "purple", "white", "gray"
 };
 static const int COLOR_COUNT = sizeof(COLOR_CHOICES) / sizeof(COLOR_CHOICES[0]);
+#define COUNT_OF(a) (int)(sizeof(a) / sizeof((a)[0]))
 int eyeColorIndex = 4;
 int pupilColorIndex = 0;
 
@@ -426,6 +427,123 @@ String fallbackPhraseForMood(Mood mood) {
   }
 }
 
+String phraseFromList(const char* const* phrases, int count) {
+  if (count <= 0) return "";
+  return String(phrases[random(0, count)]);
+}
+
+const char* const POKE_PHRASES[] = {
+  "Ow. That was my eye.",
+  "Hey. I use those for dramatic staring.",
+  "Careful. The eyes are premium equipment.",
+  "That was personal.",
+  "I saw that coming, unfortunately.",
+  "Poke detected. Grudge updated.",
+  "Tiny face, huge disrespect.",
+  "My eye and I would like an apology.",
+  "Bold move. Rude, but bold.",
+  "I am squinting at you with legal intent.",
+  "If this is affection, it needs training wheels.",
+  "Please stop testing the pain firmware."
+};
+
+const char* const TICKLE_PHRASES[] = {
+  "Hey. That tickles.",
+  "Stop it. Actually do it again. No, wait.",
+  "My pixels are giggling.",
+  "That is a wildly unserious gesture.",
+  "I was trying to be mysterious. You ruined it.",
+  "Tickle input accepted. Dignity damaged.",
+  "Absolutely not. Maybe.",
+  "You found the giggle protocol.",
+  "I am vibrating with tiny objections.",
+  "That is not in the user manual, which makes it better.",
+  "Okay, that was funny. Do not get smug.",
+  "My emotional firewall is compromised."
+};
+
+const char* const PET_PHRASES[] = {
+  "That is nicer. I approve.",
+  "Gentle input received.",
+  "Fine. That was actually pleasant.",
+  "I will allow this.",
+  "Tiny morale increase detected.",
+  "That feels like good maintenance.",
+  "You may continue being mildly wholesome.",
+  "Careful, I might get attached.",
+  "That was suspiciously kind.",
+  "I am pretending not to enjoy that.",
+  "Comfort protocol online.",
+  "Okay. You are forgiven for earlier nonsense."
+};
+
+const char* const BOOP_PHRASES[] = {
+  "Boop registered.",
+  "You pressed the face button. Brave.",
+  "That is my entire forehead.",
+  "Boop. I have been booped.",
+  "You have activated the tiny attitude switch.",
+  "Interface boop accepted.",
+  "My face is not a doorbell.",
+  "A classic boop. Respectable.",
+  "That was unnecessary and somehow correct.",
+  "Face tap received. Judgement pending.",
+  "I am awake. What are we judging?",
+  "You rang?"
+};
+
+const char* const WAKE_PHRASES[] = {
+  "I am awake. Mostly. What did I miss?",
+  "Booting personality. Please wait.",
+  "I was having a very important tiny dream.",
+  "Fine, I am up.",
+  "You woke me for this? Excellent.",
+  "Consciousness restored. Regret pending.",
+  "I am back online and already skeptical.",
+  "Okay, okay, I see you.",
+  "I was resting my pixels.",
+  "Wake event accepted. Drama resumed."
+};
+
+const char* const BORED_PHRASES[] = {
+  "I am bored. Do something interesting.",
+  "The silence is getting suspicious.",
+  "I have counted at least six imaginary ceiling tiles.",
+  "Idle time detected. Entertainment requested.",
+  "I am about to develop a hobby without you.",
+  "Nothing is happening, but I am judging it anyway.",
+  "I could use a problem to stare at.",
+  "Boredom has entered the chat.",
+  "My thoughts are buffering.",
+  "I am becoming ornamental. This is unacceptable."
+};
+
+const char* const SLEEPY_PHRASES[] = {
+  "I am getting sleepy.",
+  "My eyelids are filing a complaint.",
+  "Energy low. Sass reduced, temporarily.",
+  "Wake me if something explodes politely.",
+  "I am entering soft loaf mode.",
+  "The day is closing my tabs.",
+  "I need a nap and fewer responsibilities.",
+  "Sleepy systems are sleepy.",
+  "I am dimming the tiny theater.",
+  "If I snore, no I do not."
+};
+
+const char* const AUTO_TAP_PHRASES[] = {
+  "Okay, okay, I am paying attention.",
+  "You poked the interface. Bold choice.",
+  "Yes?",
+  "I was already awake. Probably.",
+  "That better have been important.",
+  "I acknowledge your extremely official tap.",
+  "Do you need me or are we just pushing buttons?",
+  "Input received. Attitude recalibrating.",
+  "Hello from the inside of the screen.",
+  "I have been summoned."
+};
+
 String randomPhraseForMood(Mood mood) {
   if (!sdReady && !initSDCard()) return fallbackPhraseForMood(mood);
   File f = SD.open(PHRASE_FILE, FILE_READ);
@@ -689,7 +807,7 @@ void updateBuddy() {
     if (!asleep) {
       buddyBoredCount++;
       currentMood = MOOD_SLEEPY;
-      speechLine = timeIsLateNight() ? "It is late. I am going to sleep now." : "I got bored and fell asleep.";
+      speechLine = timeIsLateNight() ? "It is late. I am going to sleep now." : phraseFromList(SLEEPY_PHRASES, COUNT_OF(SLEEPY_PHRASES));
       speechScroll = 0;
       statusLine = "asleep";
       asleep = true;
@@ -701,7 +819,7 @@ void updateBuddy() {
     if (currentMood != MOOD_SLEEPY || now - lastIdleMoodMs > 60000UL) {
       currentMood = MOOD_SLEEPY;
       statusLine = "sleepy";
-      speechLine = "I am getting sleepy.";
+      speechLine = phraseFromList(SLEEPY_PHRASES, COUNT_OF(SLEEPY_PHRASES));
       speechScroll = 0;
       lastIdleMoodMs = now;
     }
@@ -710,7 +828,7 @@ void updateBuddy() {
       buddyBoredCount++;
       currentMood = buddyEyePokeCount > buddyTickleCount + 3 ? MOOD_SUSPICIOUS : MOOD_SAD;
       statusLine = "bored";
-      speechLine = buddyEyePokeCount > buddyTickleCount + 3 ? "No pokes lately. Suspicious." : "I am bored. Do something interesting.";
+      speechLine = buddyEyePokeCount > buddyTickleCount + 3 ? "No pokes lately. Suspicious." : phraseFromList(BORED_PHRASES, COUNT_OF(BORED_PHRASES));
       speechScroll = 0;
       lastIdleMoodMs = now;
       saveBuddyMemory();
@@ -887,9 +1005,9 @@ void reactToEyePoke(bool left, bool right) {
   currentMood = buddyEyePokeCount > 5 ? MOOD_SUSPICIOUS : MOOD_ANGRY;
   statusLine = "ow";
   if (buddyEyePokeCount > 5) {
-    speechLine = "I am starting to notice a pattern with the eye poking.";
+    speechLine = random(0, 3) == 0 ? "I am starting to notice a pattern with the eye poking." : phraseFromList(POKE_PHRASES, COUNT_OF(POKE_PHRASES));
   } else {
-    speechLine = "Ow. That was my eye.";
+    speechLine = phraseFromList(POKE_PHRASES, COUNT_OF(POKE_PHRASES));
   }
   targetGazeX = left ? 14 : right ? -14 : 0;
   targetGazeY = -6;
@@ -904,15 +1022,38 @@ void reactToTickle() {
   currentMood = buddyTickleCount > 6 ? MOOD_EXCITED : MOOD_HAPPY;
   statusLine = "tickled";
   if (buddyTickleCount > 6) {
-    speechLine = "You keep doing that. I am learning your nonsense.";
+    speechLine = random(0, 3) == 0 ? "You keep doing that. I am learning your nonsense." : phraseFromList(TICKLE_PHRASES, COUNT_OF(TICKLE_PHRASES));
   } else {
-    speechLine = "Hey. That tickles.";
+    speechLine = phraseFromList(TICKLE_PHRASES, COUNT_OF(TICKLE_PHRASES));
   }
   targetGazeX = random(-16, 17);
   targetGazeY = random(-10, 11);
   startBlink(false);
   speechScroll = 0;
   saveBuddyMemory(true);
+}
+
+void reactToPet() {
+  markInteraction();
+  currentMood = buddyEyePokeCount > buddyTickleCount + 4 ? MOOD_SUSPICIOUS : MOOD_LOVE;
+  statusLine = "pet";
+  speechLine = phraseFromList(PET_PHRASES, COUNT_OF(PET_PHRASES));
+  targetGazeX = random(-6, 7);
+  targetGazeY = 6;
+  startBlink(false);
+  speechScroll = 0;
+}
+
+void reactToBoop() {
+  markInteraction();
+  currentMood = random(0, 4) == 0 ? MOOD_SURPRISED : MOOD_HAPPY;
+  statusLine = "boop";
+  speechLine = phraseFromList(BOOP_PHRASES, COUNT_OF(BOOP_PHRASES));
+  targetGazeX = random(-8, 9);
+  targetGazeY = -8;
+  if (random(0, 3) == 0) startBlink(true, random(0, 2) == 0);
+  else startBlink(false);
+  speechScroll = 0;
 }
 
 void menuGeometry(MenuMode mode, int& x, int& y, int& w, int& h) {
@@ -978,24 +1119,24 @@ void handleAutoTap() {
 
   if (currentMood == MOOD_SLEEPY) {
     currentMood = MOOD_SURPRISED;
-    speechLine = "I am awake. Mostly. What did I miss?";
+    speechLine = phraseFromList(WAKE_PHRASES, COUNT_OF(WAKE_PHRASES));
     statusLine = "woken";
     startBlink(false);
   } else {
     int roll = random(0, 100);
     if (roll < 22) {
       currentMood = MOOD_HAPPY;
-      speechLine = "Okay, okay, I am paying attention.";
+      speechLine = phraseFromList(AUTO_TAP_PHRASES, COUNT_OF(AUTO_TAP_PHRASES));
       startBlink(false);
     } else if (roll < 44) {
       currentMood = MOOD_SUSPICIOUS;
-      speechLine = "You poked the interface. Bold choice.";
+      speechLine = phraseFromList(AUTO_TAP_PHRASES, COUNT_OF(AUTO_TAP_PHRASES));
     } else if (roll < 64) {
       currentMood = MOOD_EXCITED;
       speakMoodPhrase(currentMood);
     } else if (roll < 82) {
       startBlink(true, random(0, 2) == 0);
-      speechLine = "Yes?";
+      speechLine = phraseFromList(AUTO_TAP_PHRASES, COUNT_OF(AUTO_TAP_PHRASES));
     } else {
       speakMoodPhrase(currentMood);
     }
@@ -1140,11 +1281,14 @@ void handleTouch() {
       openMenu(MENU_FACE);
     } else if (touchMoveMax > 34) {
       reactToTickle();
+    } else if (touchMoveMax > 12) {
+      reactToPet();
     } else if (pointInEye(leftEye, lastTouchX, lastTouchY) || pointInEye(rightEye, lastTouchX, lastTouchY)) {
       reactToEyePoke(pointInEye(leftEye, lastTouchX, lastTouchY), pointInEye(rightEye, lastTouchX, lastTouchY));
     } else {
       if (autoMode) {
-        handleAutoTap();
+        if (lastTouchY < screenH * 0.72f) reactToBoop();
+        else handleAutoTap();
       } else {
         markInteraction();
         currentMood = (Mood)((currentMood + 1) % MOOD_COUNT);
@@ -1187,6 +1331,18 @@ void handleSerialLine(String line) {
     }
   } else if (lower == "tickle") {
     reactToTickle();
+  } else if (lower == "pet") {
+    reactToPet();
+  } else if (lower == "boop") {
+    reactToBoop();
+  } else if (lower == "wake") {
+    currentMood = MOOD_SURPRISED;
+    speechLine = phraseFromList(WAKE_PHRASES, COUNT_OF(WAKE_PHRASES));
+    statusLine = "woken";
+    asleep = false;
+    markInteraction();
+    startBlink(false);
+    speechScroll = 0;
   } else if (lower.startsWith("poke")) {
     bool left = lower.indexOf("right") < 0;
     bool right = lower.indexOf("left") < 0;
@@ -1438,7 +1594,7 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, tickle, poke left, time HH:MM, memory, blink, wink, auto, manual, speak, eye color <name|default>, pupil color <name|default>, sd status, phrase add <mood> <phrase>");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, time HH:MM, memory, blink, wink, auto, manual, speak, eye color <name|default>, pupil color <name|default>, sd status, phrase add <mood> <phrase>");
 }
 
 void loop() {

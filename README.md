@@ -31,8 +31,11 @@ mood happy
 event face
 stats cpu=90 temp=80
 tap
+boop
+pet
 tickle
 poke left
+wake
 time 06:30
 memory
 blink
@@ -65,7 +68,10 @@ Color names include `black`, `navy`, `blue`, `sky`, `cyan`, `teal`, `green`, `li
 - In manual mode, a normal face tap cycles moods.
 - In auto mode, a normal face tap wakes or nudges the buddy to react instead of forcing the next mood.
 - Drawing/scribbling on the face tickles the buddy.
+- A gentle short stroke pets the buddy.
+- A normal face tap in auto mode boops or nudges the buddy.
 - Poking an eye makes that eye squint and increments a tiny persistent memory counter.
+- Touch reactions now rotate through larger built-in phrase pools for boops, pets, tickles, eye pokes, wakeups, boredom, and sleepy states.
 - Default eye colors follow the time of day: early AM yellow/white, morning light blue/yellow, daytime mood-driven colors, evening/night dark blue/black.
 - A fixed `eye color <name>` or `pupil color <name>` overrides the default time-of-day color until set back to `default`.
 - System menus include the SD phrase bank and placeholders for XIAO, AI model, and Wi-Fi bridge setup.
