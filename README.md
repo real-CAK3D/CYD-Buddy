@@ -184,8 +184,46 @@ When both boards are powered from a power bank, they can work without NukeBox or
   - `event vision:dark`
   - `event vision:busy`
 - CYD maps those events into moods and phrases locally.
+- CYD can also send settings back to XIAO over BLE:
+  - `capture`
+  - `threshold <level>`
+  - `stream on`
+  - `stream off`
+  - `remember <name>`
+  - `forget person`
 
 This is the first tiny-AI layer. It is not a full LLM on-device; it is an offline reflex/classifier layer that makes the buddy portable. Rich chat, weather, online info, and longer reasoning still use Ollama/OpenAI when a relay is available.
+
+## CYD Wi-Fi and Online Bridge
+
+CYD firmware now uses the larger `huge_app.csv` partition so BLE, Wi-Fi, SD, touch, and the face UI can fit together on the 4 MB CYD.
+
+Serial commands for hotspot/Tailscale/Ollama setup:
+
+```text
+wifi ssid <hotspot-or-router-name>
+wifi pass <password>
+wifi connect
+wifi status
+time sync
+ollama host <url>
+xiao <command>
+remember me as <name>
+```
+
+The password is saved locally in ESP32 preferences and is not printed by `wifi status`.
+
+When CYD is on a phone hotspot, home Wi-Fi, or any network that can reach Tailscale/Ollama, the PC relay can use `wifi status`, `ollama host`, and normal `say`/`event` commands to give the buddy accurate time, weather, and richer AI responses. Offline, CYD keeps using the XIAO BLE sensor events and local phrase/mood logic.
+
+## Remembered Person
+
+`remember me as <name>` tells CYD to send `remember <name>` to the XIAO Sense. XIAO captures a lightweight visual signature and stores it in its own preferences. When later camera samples look similar, XIAO emits:
+
+```text
+event person:<name>
+```
+
+CYD responds by greeting that name. This is a lightweight portable recognition scaffold, not full face-recognition embeddings yet. A later ESP-DL/TFLite or network AI layer can replace the visual signature with real face/audio identity recognition.
 
 ## MimiClaw Reference
 

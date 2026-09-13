@@ -5,6 +5,7 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include <Preferences.h>
 
 // Seeed XIAO ESP32S3 Sense B2B camera pins.
 static const int CAM_PWDN = -1;
@@ -34,6 +35,7 @@ static const int SAMPLE_COUNT = 512;
 static const char* BLE_NAME = "CYD-Sense";
 static BLEUUID BUDDY_SERVICE_UUID("7a2f0001-44b8-4f2a-9c4f-c0d000000001");
 static BLEUUID BUDDY_EVENT_UUID("7a2f0002-44b8-4f2a-9c4f-c0d000000002");
+static BLEUUID BUDDY_COMMAND_UUID("7a2f0003-44b8-4f2a-9c4f-c0d000000003");
 
 bool cameraReady = false;
 bool micReady = false;
@@ -50,8 +52,14 @@ int loudThreshold = 900;
 int quietThreshold = 80;
 int lastFrameBytes = 0;
 int stableQuietCount = 0;
+int rememberedSignature = 0;
+String rememberedName;
 BLEServer* buddyServer = nullptr;
 BLECharacteristic* eventCharacteristic = nullptr;
+BLECharacteristic* commandCharacteristic = nullptr;
+Preferences prefs;
+
+void handleCommand(String line);
 
 class BuddyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* server) override {
@@ -103,6 +111,59 @@ void publishBuddyEvent(const String& eventLine) {
   }
 }
 
+int captureVisualSignature() {
+  if (!cameraReady) return 0;
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) return 0;
+
+  uint32_t hash = fb->len;
+  size_t step = max((size_t)1, fb->len / 96);
+  for (size_t i = 0; i < fb->len; i += step) {
+    hash = ((hash << 5) | (hash >> 27)) ^ fb->buf[i];
+  }
+  int signature = (int)(hash % 100000);
+  esp_camera_fb_return(fb);
+  return signature;
+}
+
+void loadPersonMemory() {
+  prefs.begin("sense", true);
+  rememberedName = prefs.getString("person", "");
+  rememberedSignature = prefs.getInt("sig", 0);
+  prefs.end();
+}
+
+void rememberPerson(String name) {
+  name.trim();
+  if (name.length() == 0) name = "friend";
+  int signature = captureVisualSignature();
+  if (signature == 0) {
+    Serial.println("remember=failed camera=missing");
+    publishBuddyEvent("event remember:failed");
+    return;
+  }
+
+  rememberedName = name;
+  rememberedSignature = signature;
+  prefs.begin("sense", false);
+  prefs.putString("person", rememberedName);
+  prefs.putInt("sig", rememberedSignature);
+  prefs.end();
+
+  Serial.printf("remember=ok name=%s sig=%d\n", rememberedName.c_str(), rememberedSignature);
+  publishBuddyEvent(String("event remember:") + rememberedName);
+}
+
+class BuddyCommandCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    std::string value = characteristic->getValue();
+    if (value.empty()) return;
+    String line;
+    for (char c : value) line += c;
+    handleCommand(line);
+  }
+};
+
 void beginBle() {
   BLEDevice::init(BLE_NAME);
   buddyServer = BLEDevice::createServer();
@@ -112,6 +173,10 @@ void beginBle() {
       BUDDY_EVENT_UUID,
       BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
   eventCharacteristic->setValue("event hello");
+  commandCharacteristic = service->createCharacteristic(
+      BUDDY_COMMAND_UUID,
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  commandCharacteristic->setCallbacks(new BuddyCommandCallbacks());
   service->start();
   BLEAdvertising* advertising = BLEDevice::getAdvertising();
   advertising->addServiceUUID(BUDDY_SERVICE_UUID);
@@ -252,7 +317,10 @@ void captureTinyVisionEvent() {
   esp_camera_fb_return(fb);
 
   printJsonStatus("tiny_vision", -1, width, height, bytes);
-  if (delta > 850) {
+  int signature = captureVisualSignature();
+  if (rememberedSignature > 0 && rememberedName.length() > 0 && abs(signature - rememberedSignature) < 5500 && random(0, 3) == 0) {
+    publishBuddyEvent(String("event person:") + rememberedName);
+  } else if (delta > 850) {
     publishBuddyEvent("event vision:motion");
   } else if (bytes < 2300) {
     publishBuddyEvent("event vision:dark");
@@ -281,26 +349,44 @@ void initSensors() {
 
 void handleCommand(String line) {
   line.trim();
-  line.toLowerCase();
   if (line.length() == 0) return;
+  String lower = line;
+  lower.toLowerCase();
 
-  if (line == "status") {
+  if (lower == "status") {
     printJsonStatus("status");
-  } else if (line == "init") {
+    Serial.printf("remembered=%s sig=%d threshold=%d stream=%s ble=%s\n",
+                  rememberedName.length() ? rememberedName.c_str() : "none",
+                  rememberedSignature,
+                  loudThreshold,
+                  streamEvents ? "on" : "off",
+                  bleClientConnected ? "connected" : "advertising");
+  } else if (lower == "init") {
     initSensors();
-  } else if (line == "capture" || line == "frame") {
+  } else if (lower == "capture" || lower == "frame") {
     captureFrame();
-  } else if (line == "stream on") {
+  } else if (lower == "stream on") {
     streamEvents = true;
     Serial.println("stream=on");
-  } else if (line == "stream off") {
+  } else if (lower == "stream off") {
     streamEvents = false;
     Serial.println("stream=off");
-  } else if (line.startsWith("threshold ")) {
-    loudThreshold = max(10, (int)line.substring(10).toInt());
+  } else if (lower.startsWith("threshold ")) {
+    loudThreshold = max(10, (int)lower.substring(10).toInt());
     Serial.printf("threshold=%d\n", loudThreshold);
-  } else if (line == "help") {
-    Serial.println("commands: status, init, capture, stream on, stream off, threshold <level>, help");
+  } else if (lower.startsWith("remember ")) {
+    rememberPerson(line.substring(9));
+  } else if (lower == "forget me" || lower == "forget person") {
+    rememberedName = "";
+    rememberedSignature = 0;
+    prefs.begin("sense", false);
+    prefs.remove("person");
+    prefs.remove("sig");
+    prefs.end();
+    Serial.println("remember=cleared");
+    publishBuddyEvent("event remember:cleared");
+  } else if (lower == "help") {
+    Serial.println("commands: status, init, capture, stream on, stream off, threshold <level>, remember <name>, forget person, help");
   } else {
     Serial.println("unknown command; try help");
   }
@@ -332,9 +418,10 @@ void setup() {
   delay(500);
   Serial.println("XIAO S3 Sense bridge alive");
   Serial.printf("psram=%s free_psram=%u free_heap=%u\n", psramFound() ? "yes" : "no", (unsigned)ESP.getFreePsram(), (unsigned)ESP.getFreeHeap());
+  loadPersonMemory();
   beginBle();
   printJsonStatus("boot");
-  Serial.println("commands: status, init, capture, stream on, stream off, threshold <level>, help");
+  Serial.println("commands: status, init, capture, stream on, stream off, threshold <level>, remember <name>, forget person, help");
   initSensors();
   led(false);
 }

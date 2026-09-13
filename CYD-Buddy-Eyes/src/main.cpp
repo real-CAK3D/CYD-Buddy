@@ -7,6 +7,8 @@
 #include <SD.h>
 #include <math.h>
 #include <BLEDevice.h>
+#include <WiFi.h>
+#include <time.h>
 
 static const int DEFAULT_ROTATION = 2;
 static int displayRotation = DEFAULT_ROTATION;
@@ -45,6 +47,7 @@ bool frameOk = false;
 bool sdReady = false;
 static BLEUUID SENSE_SERVICE_UUID("7a2f0001-44b8-4f2a-9c4f-c0d000000001");
 static BLEUUID SENSE_EVENT_UUID("7a2f0002-44b8-4f2a-9c4f-c0d000000002");
+static BLEUUID SENSE_COMMAND_UUID("7a2f0003-44b8-4f2a-9c4f-c0d000000003");
 
 enum Mood {
   MOOD_NORMAL,
@@ -128,9 +131,18 @@ bool bleReady = false;
 bool bleConnected = false;
 bool bleEventReady = false;
 bool bleDisconnected = false;
+bool senseStreamEvents = true;
 BLEAdvertisedDevice* senseDevice = nullptr;
 BLEClient* senseClient = nullptr;
 BLERemoteCharacteristic* senseEventChar = nullptr;
+BLERemoteCharacteristic* senseCommandChar = nullptr;
+
+bool wifiConfigured = false;
+bool wifiConnecting = false;
+String wifiSsid;
+String ollamaHost;
+unsigned long wifiStartedMs = 0;
+unsigned long lastWifiCheckMs = 0;
 
 void handleSerialLine(String line);
 
@@ -351,6 +363,87 @@ void setBacklight(uint8_t value) {
   analogWrite(BACKLIGHT_PIN, value);
 }
 
+void loadNetworkSettings() {
+  prefs.begin("network", false);
+  wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid", "") : "";
+  ollamaHost = prefs.isKey("ollama") ? prefs.getString("ollama", "http://127.0.0.1:11434") : "http://127.0.0.1:11434";
+  prefs.end();
+  wifiConfigured = wifiSsid.length() > 0;
+}
+
+void saveWifiSsid(const String& ssid) {
+  wifiSsid = ssid;
+  wifiSsid.trim();
+  prefs.begin("network", false);
+  prefs.putString("ssid", wifiSsid);
+  prefs.end();
+  wifiConfigured = wifiSsid.length() > 0;
+}
+
+void saveWifiPassword(const String& password) {
+  prefs.begin("network", false);
+  prefs.putString("pass", password);
+  prefs.end();
+}
+
+void saveOllamaHost(const String& host) {
+  ollamaHost = host;
+  ollamaHost.trim();
+  prefs.begin("network", false);
+  prefs.putString("ollama", ollamaHost);
+  prefs.end();
+}
+
+void connectWifi() {
+  loadNetworkSettings();
+  if (!wifiConfigured) {
+    statusLine = "wifi no ssid";
+    speechLine = "Set WiFi SSID and password first.";
+    speechScroll = 0;
+    return;
+  }
+
+  prefs.begin("network", true);
+  String pass = prefs.getString("pass", "");
+  prefs.end();
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifiSsid.c_str(), pass.c_str());
+  wifiConnecting = true;
+  wifiStartedMs = millis();
+  statusLine = "wifi connecting";
+  speechLine = "Connecting to WiFi.";
+  speechScroll = 0;
+}
+
+void syncNetworkTime() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 2500)) {
+    bootMinuteOfDay = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    clockSetAtMs = millis();
+    statusLine = "time synced";
+  }
+}
+
+void updateWifi() {
+  if (!wifiConnecting || millis() - lastWifiCheckMs < 500) return;
+  lastWifiCheckMs = millis();
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnecting = false;
+    statusLine = "wifi connected";
+    speechLine = "WiFi connected. I can reach the wider brain when the relay is available.";
+    speechScroll = 0;
+    syncNetworkTime();
+  } else if (millis() - wifiStartedMs > 20000) {
+    wifiConnecting = false;
+    WiFi.disconnect(false);
+    statusLine = "wifi failed";
+    speechLine = "WiFi did not connect. Check hotspot name and password.";
+    speechScroll = 0;
+  }
+}
+
 class SenseAdvertisedCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
     if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SENSE_SERVICE_UUID)) {
@@ -370,6 +463,7 @@ class SenseClientCallbacks : public BLEClientCallbacks {
     bleConnected = false;
     bleDisconnected = true;
     senseEventChar = nullptr;
+    senseCommandChar = nullptr;
   }
 };
 
@@ -382,6 +476,20 @@ void onSenseNotify(BLERemoteCharacteristic*, uint8_t* data, size_t length, bool)
   bleEventLine = line;
   bleEventReady = true;
   lastBleEventMs = millis();
+}
+
+bool sendSenseCommand(String command) {
+  command.trim();
+  if (!bleConnected || !senseCommandChar || command.length() == 0) {
+    speechLine = "XIAO Sense is not connected yet.";
+    speechScroll = 0;
+    return false;
+  }
+  senseCommandChar->writeValue((uint8_t*)command.c_str(), command.length(), true);
+  statusLine = "xiao command";
+  speechLine = "Sent to XIAO: " + command;
+  speechScroll = 0;
+  return true;
 }
 
 void beginSenseBle() {
@@ -397,13 +505,16 @@ void beginSenseBle() {
 
 bool connectSenseBle() {
   if (!senseDevice) return false;
+  Serial.println("ble_attach=connecting");
   if (senseClient) {
+    if (senseClient->isConnected()) senseClient->disconnect();
     delete senseClient;
     senseClient = nullptr;
   }
   senseClient = BLEDevice::createClient();
   senseClient->setClientCallbacks(new SenseClientCallbacks());
   if (!senseClient->connect(senseDevice)) {
+    Serial.println("ble_attach=connect_failed");
     delete senseDevice;
     senseDevice = nullptr;
     return false;
@@ -411,6 +522,7 @@ bool connectSenseBle() {
 
   BLERemoteService* service = senseClient->getService(SENSE_SERVICE_UUID);
   if (!service) {
+    Serial.println("ble_attach=service_missing");
     senseClient->disconnect();
     delete senseDevice;
     senseDevice = nullptr;
@@ -419,13 +531,16 @@ bool connectSenseBle() {
 
   senseEventChar = service->getCharacteristic(SENSE_EVENT_UUID);
   if (!senseEventChar) {
+    Serial.println("ble_attach=event_missing");
     senseClient->disconnect();
     delete senseDevice;
     senseDevice = nullptr;
     return false;
   }
+  senseCommandChar = service->getCharacteristic(SENSE_COMMAND_UUID);
 
   if (senseEventChar->canNotify()) senseEventChar->registerForNotify(onSenseNotify);
+  Serial.printf("ble_attach=ok command=%s\n", senseCommandChar ? "yes" : "no");
   bleConnected = true;
   statusLine = "xiao ble connected";
   speechLine = "XIAO Sense connected. I have portable eyes and ears.";
@@ -1008,7 +1123,21 @@ void applyEvent(String event) {
   lastEvent = event;
   lastMoodAuto = millis();
 
-  if (event.indexOf("vision:dark") >= 0) {
+  if (event.indexOf("person:") >= 0) {
+    int sep = event.indexOf("person:");
+    String name = event.substring(sep + 7);
+    name.trim();
+    currentMood = MOOD_HAPPY;
+    statusLine = "recognized: " + name;
+    speechLine = "Hi " + name + ". I see you.";
+    startBlink(false);
+  } else if (event.indexOf("remember:") >= 0) {
+    String name = event.substring(event.indexOf("remember:") + 9);
+    name.trim();
+    currentMood = MOOD_HAPPY;
+    statusLine = "remembered";
+    speechLine = name == "cleared" ? "I cleared the remembered person." : "I will remember " + name + ".";
+  } else if (event.indexOf("vision:dark") >= 0) {
     currentMood = MOOD_SLEEPY;
     statusLine = "vision: dark";
     speechLine = "It got dark. I am switching to dramatic night mode.";
@@ -1307,25 +1436,31 @@ void handleMenuItem(int item) {
       speechLine = bleConnected ? "XIAO Sense is connected over BLE." : "Scanning for XIAO Sense over BLE.";
       if (!bleConnected) lastBleScanMs = 0;
     } else if (item == 1) {
-      speechLine = "XIAO will send face, motion, sound, and vision events.";
+      sendSenseCommand("capture");
     } else if (item == 2) {
-      speechLine = bleConnected ? "Bluetooth events are live." : "Bluetooth scan is active in portable mode.";
+      sendSenseCommand("threshold 900");
     } else if (item == 3) {
-      speechLine = "WiFi bridge is better for camera and audio payloads.";
+      sendSenseCommand(senseStreamEvents ? "stream off" : "stream on");
+      senseStreamEvents = !senseStreamEvents;
     }
   } else if (menuMode == MENU_SYSTEM_AI) {
     if (item == 0) {
-      speechLine = "Local Gemma bridge will live here.";
+      speechLine = "Ollama host: " + ollamaHost;
     } else if (item == 2) {
-      speechLine = "Gemma can rewrite phrases and send new speech lines.";
+      speechLine = WiFi.status() == WL_CONNECTED ? "Online AI bridge ready for relay." : "Connect WiFi for Ollama/OpenAI relay.";
     } else if (item == 3) {
       speakMoodPhrase(currentMood);
     }
   } else if (menuMode == MENU_SYSTEM_WIFI) {
-    if (item == 0) speechLine = "WiFi setup page is next.";
-    else if (item == 1) speechLine = "Host bridge will connect CYD, XIAO, and Gemma.";
-    else if (item == 2) speechLine = "BLE is for small events. WiFi is for camera and audio.";
-    else if (item == 3) speechLine = "No WiFi credentials are stored yet.";
+    if (item == 0) connectWifi();
+    else if (item == 1) {
+      speechLine = WiFi.status() == WL_CONNECTED ? "WiFi connected: " + WiFi.localIP().toString() : "WiFi is not connected.";
+    } else if (item == 2) {
+      syncNetworkTime();
+      speechLine = "Time sync requested.";
+    } else if (item == 3) {
+      speechLine = wifiConfigured ? "WiFi SSID saved. Password is hidden." : "No WiFi SSID saved.";
+    }
   } else if (menuMode == MENU_SYSTEM_PHRASES) {
     if (item == 0) {
       speechLine = sdReady ? "Phrase bank ready at /cydbuddy/phrases.csv." : "SD card not mounted.";
@@ -1532,6 +1667,40 @@ void handleSerialLine(String line) {
   } else if (lower == "sd status") {
     if (!sdReady) initSDCard();
     printSDStatus();
+  } else if (lower.startsWith("wifi ssid ")) {
+    saveWifiSsid(line.substring(10));
+    Serial.printf("wifi_ssid=saved length=%d\n", wifiSsid.length());
+    speechLine = "WiFi SSID saved. Set password, then connect.";
+    speechScroll = 0;
+  } else if (lower.startsWith("wifi pass ")) {
+    saveWifiPassword(line.substring(10));
+    Serial.println("wifi_pass=saved");
+    speechLine = "WiFi password saved locally.";
+    speechScroll = 0;
+  } else if (lower == "wifi connect") {
+    connectWifi();
+  } else if (lower == "wifi status") {
+    loadNetworkSettings();
+    Serial.printf("wifi status=%s ssid_saved=%s ip=%s rssi=%d ollama=%s\n",
+                  WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
+                  wifiConfigured ? "true" : "false",
+                  WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "0.0.0.0",
+                  WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0,
+                  ollamaHost.c_str());
+  } else if (lower == "time sync") {
+    syncNetworkTime();
+    Serial.printf("time_sync minute=%d wifi=%s\n", minuteOfDay(), WiFi.status() == WL_CONNECTED ? "connected" : "offline");
+  } else if (lower.startsWith("ollama host ")) {
+    saveOllamaHost(line.substring(12));
+    Serial.printf("ollama_host=saved %s\n", ollamaHost.c_str());
+  } else if (lower.startsWith("xiao ")) {
+    sendSenseCommand(line.substring(5));
+  } else if (lower.startsWith("remember me as ")) {
+    sendSenseCommand("remember " + line.substring(15));
+  } else if (lower.startsWith("remember me ")) {
+    sendSenseCommand("remember " + line.substring(12));
+  } else if (lower.startsWith("remember ")) {
+    sendSenseCommand("remember " + line.substring(9));
   } else if (lower.startsWith("phrase add ")) {
     String rest = line.substring(11);
     int sep = rest.indexOf(' ');
@@ -1613,7 +1782,7 @@ const char* menuTitle() {
 String menuItemLabel(int i) {
   if (i == 4) return "Back";
   if (menuMode == MENU_SYSTEM) {
-    const char* a[] = {"XIAO S3 Sense", "AI model", "WiFi bridge", "Phrase bank"};
+    const char* a[] = {"XIAO S3 Sense", "AI/Ollama", "WiFi/Time", "Phrase bank"};
     return a[i];
   }
   if (menuMode == MENU_FACE) {
@@ -1621,15 +1790,15 @@ String menuItemLabel(int i) {
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_XIAO) {
-    const char* a[] = {"Connect info", "Event types", "Bluetooth", "WiFi bridge"};
+    const char* a[] = {"Connect info", "Capture", "Mic threshold", "Stream toggle"};
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_AI) {
-    const char* a[] = {"Gemma bridge", "Voice input", "Rewrite phrases", "Speak phrase"};
+    const char* a[] = {"Ollama host", "Voice input", "Online status", "Speak phrase"};
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_WIFI) {
-    const char* a[] = {"WiFi setup", "Host bridge", "BLE vs WiFi", "Credentials"};
+    const char* a[] = {"Connect WiFi", "WiFi status", "Sync time", "Credentials"};
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_PHRASES) {
@@ -1720,6 +1889,7 @@ void setup() {
   ts.begin(touchSPI);
 
   initSDCard();
+  loadNetworkSettings();
 
   prefs.begin("cyd-buddy", true);
   int savedRotation = prefs.getInt("rotation", DEFAULT_ROTATION);
@@ -1736,12 +1906,13 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, time HH:MM, memory, blink, wink, auto, manual, speak, eye color <name|default>, pupil color <name|default>, sd status, phrase add <mood> <phrase>");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, time HH:MM, time sync, memory, blink, wink, auto, manual, speak, eye color <name|default>, pupil color <name|default>, sd status, wifi ssid <name>, wifi pass <password>, wifi connect, wifi status, ollama host <url>, xiao <command>, remember me as <name>, phrase add <mood> <phrase>");
 }
 
 void loop() {
   processSerial();
   updateSenseBle();
+  updateWifi();
   handleTouch();
   updateBuddy();
   drawFrame();
