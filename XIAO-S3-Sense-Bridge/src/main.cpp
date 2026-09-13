@@ -44,19 +44,24 @@ bool sensorInitAttempted = false;
 bool bleClientConnected = false;
 bool bleNeedsAdvertising = false;
 bool coolMode = true;
+bool voiceMode = false;
 unsigned long lastSensorMs = 0;
 unsigned long lastHeartbeatMs = 0;
 unsigned long lastVisionMs = 0;
 unsigned long lastBleAdvertiseMs = 0;
 unsigned long lastBleNotifyMs = 0;
+unsigned long lastWakeEventMs = 0;
+unsigned long lastSpeechEventMs = 0;
 int loudThreshold = 900;
 int quietThreshold = 80;
 unsigned long micIntervalMs = 1500;
-unsigned long visionIntervalMs = 45000;
+unsigned long visionIntervalMs = 3000;
 int lastFrameBytes = 0;
 int stableQuietCount = 0;
 int rememberedSignature = 0;
 String rememberedName;
+String wakeName = "Buddy";
+int wakeSignature = 0;
 BLEServer* buddyServer = nullptr;
 BLECharacteristic* eventCharacteristic = nullptr;
 BLECharacteristic* commandCharacteristic = nullptr;
@@ -133,6 +138,8 @@ void loadPersonMemory() {
   prefs.begin("sense", true);
   rememberedName = prefs.getString("person", "");
   rememberedSignature = prefs.getInt("sig", 0);
+  wakeName = prefs.getString("wake", "Buddy");
+  wakeSignature = prefs.getInt("wakeSig", 0);
   prefs.end();
 }
 
@@ -290,6 +297,75 @@ int readMicLevel() {
   return (int)(energy / max(1, count));
 }
 
+int captureWakeSignature() {
+  if (!micReady) return 0;
+  Serial.printf("wake_train=listen name=%s\n", wakeName.c_str());
+  led(true);
+  delay(250);
+  uint32_t sum = 0;
+  int peak = 0;
+  int count = 0;
+  for (int i = 0; i < 18; i++) {
+    int level = readMicLevel();
+    if (level > 0) {
+      sum += level;
+      peak = max(peak, level);
+      count++;
+    }
+    delay(55);
+  }
+  led(false);
+  if (count == 0 || peak < quietThreshold * 2) return 0;
+  return (int)((sum / count) * 3 + peak * 2);
+}
+
+void saveWakeName(String name) {
+  name.trim();
+  if (name.length() == 0) name = "Buddy";
+  if (name.length() > 28) name = name.substring(0, 28);
+  wakeName = name;
+  prefs.begin("sense", false);
+  prefs.putString("wake", wakeName);
+  prefs.end();
+  Serial.printf("wake_name=%s\n", wakeName.c_str());
+}
+
+void trainWakeName(String name = "") {
+  if (name.length() > 0) saveWakeName(name);
+  int sig = captureWakeSignature();
+  if (sig <= 0) {
+    Serial.println("wake_train=failed speak_louder");
+    publishBuddyEvent("event voice:train_failed");
+    return;
+  }
+  wakeSignature = sig;
+  prefs.begin("sense", false);
+  prefs.putString("wake", wakeName);
+  prefs.putInt("wakeSig", wakeSignature);
+  prefs.end();
+  Serial.printf("wake_train=ok name=%s sig=%d\n", wakeName.c_str(), wakeSignature);
+  publishBuddyEvent(String("event voice:trained name=") + wakeName);
+}
+
+void detectVoiceEvents(int level) {
+  if (!voiceMode || level <= 0) return;
+  unsigned long now = millis();
+  if (wakeSignature > 0 && level > quietThreshold * 2) {
+    int sig = level * 5;
+    int delta = abs(sig - wakeSignature);
+    int allowance = max(900, wakeSignature / 3);
+    if (delta < allowance && now - lastWakeEventMs > 2500) {
+      lastWakeEventMs = now;
+      publishBuddyEvent(String("event voice:wake name=") + wakeName);
+      return;
+    }
+  }
+  if (level > loudThreshold && now - lastSpeechEventMs > 1200) {
+    lastSpeechEventMs = now;
+    publishBuddyEvent(String("event voice:speech level=") + level);
+  }
+}
+
 void captureFrame() {
   if (!cameraReady) {
     Serial.println("capture=failed camera=missing");
@@ -358,12 +434,15 @@ void handleCommand(String line) {
 
   if (lower == "status") {
     printJsonStatus("status");
-    Serial.printf("remembered=%s sig=%d threshold=%d stream=%s mode=%s mic_ms=%lu vision_ms=%lu ble=%s\n",
+    Serial.printf("remembered=%s sig=%d wake=%s wake_sig=%d threshold=%d stream=%s mode=%s voice=%s mic_ms=%lu vision_ms=%lu ble=%s\n",
                   rememberedName.length() ? rememberedName.c_str() : "none",
                   rememberedSignature,
+                  wakeName.c_str(),
+                  wakeSignature,
                   loudThreshold,
                   streamEvents ? "on" : "off",
                   coolMode ? "cool" : "active",
+                  voiceMode ? "on" : "off",
                   micIntervalMs,
                   visionIntervalMs,
                   bleClientConnected ? "connected" : "advertising");
@@ -383,15 +462,34 @@ void handleCommand(String line) {
   } else if (lower == "cool") {
     coolMode = true;
     streamEvents = false;
-    micIntervalMs = 1500;
-    visionIntervalMs = 45000;
-    Serial.println("mode=cool stream=off mic_ms=1500 vision_ms=45000");
+    voiceMode = true;
+    micIntervalMs = 120;
+    visionIntervalMs = 3000;
+    Serial.println("mode=cool stream=off voice=on mic_ms=120 vision_ms=3000");
   } else if (lower == "active") {
     coolMode = false;
     streamEvents = true;
+    voiceMode = true;
     micIntervalMs = 500;
-    visionIntervalMs = 15000;
-    Serial.println("mode=active stream=on mic_ms=500 vision_ms=15000");
+    visionIntervalMs = 3000;
+    Serial.println("mode=active stream=on voice=on mic_ms=500 vision_ms=3000");
+  } else if (lower == "voice" || lower == "voice on") {
+    voiceMode = true;
+    streamEvents = true;
+    micIntervalMs = 120;
+    Serial.println("voice=on stream=on mic_ms=120");
+  } else if (lower == "voice off") {
+    voiceMode = false;
+    Serial.println("voice=off");
+  } else if (lower.startsWith("snapshot ")) {
+    visionIntervalMs = max(1000, (int)lower.substring(9).toInt());
+    Serial.printf("vision_ms=%lu\n", visionIntervalMs);
+  } else if (lower.startsWith("wake name ")) {
+    saveWakeName(line.substring(10));
+  } else if (lower.startsWith("wake train ")) {
+    trainWakeName(line.substring(11));
+  } else if (lower == "wake train" || lower == "train wake") {
+    trainWakeName();
   } else if (lower.startsWith("remember ")) {
     rememberPerson(line.substring(9));
   } else if (lower == "forget me" || lower == "forget person") {
@@ -404,7 +502,7 @@ void handleCommand(String line) {
     Serial.println("remember=cleared");
     publishBuddyEvent("event remember:cleared");
   } else if (lower == "help") {
-    Serial.println("commands: status, init, capture, stream on, stream off, cool, active, threshold <level>, remember <name>, forget person, help");
+    Serial.println("commands: status, init, capture, stream on, stream off, cool, active, voice on, voice off, snapshot <ms>, threshold <level>, wake name <name>, wake train [name], remember <name>, forget person, help");
   } else {
     Serial.println("unknown command; try help");
   }
@@ -439,7 +537,7 @@ void setup() {
   loadPersonMemory();
   beginBle();
   printJsonStatus("boot");
-  Serial.println("commands: status, init, capture, stream on, stream off, cool, active, threshold <level>, remember <name>, forget person, help");
+  Serial.println("commands: status, init, capture, stream on, stream off, cool, active, voice on, voice off, snapshot <ms>, threshold <level>, wake name <name>, wake train [name], remember <name>, forget person, help");
   initSensors();
   led(false);
 }
@@ -457,6 +555,7 @@ void loop() {
     lastSensorMs = now;
     int level = readMicLevel();
     if (level >= 0) {
+      detectVoiceEvents(level);
       if (streamEvents && level > loudThreshold) {
         publishBuddyEvent(String("event sound:loud level=") + level);
       } else if (streamEvents && level < quietThreshold) {

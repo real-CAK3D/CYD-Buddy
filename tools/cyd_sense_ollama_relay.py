@@ -140,6 +140,12 @@ def parse_xiao_line(line: str, state: BridgeState) -> Optional[str]:
 
 
 def event_context(event_line: str, state: BridgeState) -> str:
+    if "voice:wake" in event_line:
+        return "The user called the buddy's trained name. The buddy should acknowledge and listen."
+    if "voice:speech" in event_line:
+        return "The XIAO mic detected speech or a strong voice burst. No transcription is available yet."
+    if "voice:trained" in event_line:
+        return "The buddy learned the sound pattern of its name."
     if "face" in event_line:
         return "The buddy's XIAO camera just captured a face or visual movement."
     if "sound:loud" in event_line:
@@ -191,6 +197,18 @@ def xiao_reader(xiao: SerialEndpoint, events: queue.Queue[str], state: BridgeSta
             events.put(event)
 
 
+def cyd_reader(cyd: SerialEndpoint, commands: queue.Queue[str], stop: threading.Event) -> None:
+    while not stop.is_set():
+        line = cyd.read_line()
+        if line is None:
+            continue
+        print(f"[cyd] {line}")
+        if line.startswith("XIAO_CMD "):
+            command = line[len("XIAO_CMD ") :].strip()
+            if command:
+                commands.put(command)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bridge XIAO Sense events to CYD Buddy and Ollama.")
     parser.add_argument("--xiao-port", default="COM7")
@@ -200,14 +218,15 @@ def main() -> int:
     parser.add_argument("--model", default="gemma4:latest")
     parser.add_argument("--no-ollama", action="store_true")
     parser.add_argument("--no-cyd", action="store_true")
-    parser.add_argument("--capture-interval", type=float, default=45.0)
-    parser.add_argument("--ai-cooldown", type=float, default=8.0)
+    parser.add_argument("--capture-interval", type=float, default=3.0)
+    parser.add_argument("--ai-cooldown", type=float, default=2.0)
     parser.add_argument("--active", action="store_true", help="Use hotter/faster S3 sensing instead of cool snapshot mode.")
     parser.add_argument("--duration", type=float, default=0.0, help="Optional run length in seconds.")
     args = parser.parse_args()
 
     state = BridgeState()
     events: queue.Queue[str] = queue.Queue()
+    commands: queue.Queue[str] = queue.Queue()
     stop = threading.Event()
 
     def stop_now(_sig=None, _frame=None) -> None:
@@ -226,9 +245,14 @@ def main() -> int:
 
     reader = threading.Thread(target=xiao_reader, args=(xiao, events, state, stop), daemon=True)
     reader.start()
+    if not args.no_cyd:
+        cyd_commands = threading.Thread(target=cyd_reader, args=(cyd, commands, stop), daemon=True)
+        cyd_commands.start()
 
     time.sleep(0.8)
     xiao.write_line("active" if args.active else "cool")
+    xiao.write_line("voice on")
+    xiao.write_line("snapshot 3000")
     xiao.write_line("init")
 
     print("[relay] running; Ctrl+C to stop")
@@ -244,6 +268,14 @@ def main() -> int:
             xiao.write_line("capture")
             next_capture = now + args.capture_interval
 
+        while True:
+            try:
+                command = commands.get_nowait()
+            except queue.Empty:
+                break
+            print(f"[relay] CYD->XIAO {command}")
+            xiao.write_line(command)
+
         try:
             event_line = events.get(timeout=0.2)
         except queue.Empty:
@@ -255,7 +287,6 @@ def main() -> int:
         if not args.no_cyd:
             if cyd.write_line(event_line):
                 state.sent_count += 1
-                cyd.drain("cyd")
 
         if not args.no_ollama and now - state.last_ai_at >= args.ai_cooldown:
             speech = ask_ollama(args.ollama_url, args.model, event_line, state, timeout=20.0)
@@ -265,7 +296,6 @@ def main() -> int:
                 print(f"[ollama] {speech}")
                 if not args.no_cyd:
                     cyd.write_line(f"say {speech}")
-                    cyd.drain("cyd")
 
     stop.set()
     xiao.close()

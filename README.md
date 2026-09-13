@@ -53,6 +53,9 @@ eye color amber
 pupil color lime
 pupil color default
 say <text to show on the speech line>
+scroll speed <fast|normal|slow|ms>
+name <buddy-name>
+train name
 ```
 
 Color names include `black`, `navy`, `blue`, `sky`, `cyan`, `teal`, `green`, `lime`, `amber`, `yellow`, `red`, `pink`, `purple`, `white`, and `gray`.
@@ -75,6 +78,8 @@ Color names include `black`, `navy`, `blue`, `sky`, `cyan`, `teal`, `green`, `li
 - Default eye colors follow the time of day: early AM yellow/white, morning light blue/yellow, daytime mood-driven colors, evening/night dark blue/black.
 - A fixed `eye color <name>` or `pupil color <name>` overrides the default time-of-day color until set back to `default`.
 - System menus include the SD phrase bank and placeholders for XIAO, AI model, and Wi-Fi bridge setup.
+- The AI menu includes the buddy name, wake-name training, text scroll speed, and online status.
+- Text scroll speed can also be changed over serial with `scroll speed fast`, `scroll speed normal`, `scroll speed slow`, or a millisecond value from `50` to `600`.
 
 ## Next Steps
 
@@ -116,13 +121,18 @@ Serial commands:
 status
 init
 capture
+snapshot 3000
+voice on
+voice off
+wake name Buddy
+wake train Buddy
 stream on
 stream off
 threshold 900
 help
 ```
 
-The bridge prints `BUDDY event ...` lines that can be relayed into the CYD firmware later.
+The bridge prints `BUDDY event ...` lines that can be relayed into the CYD firmware. The current wake-name feature records a lightweight mic-level signature of the spoken name; it is a wake trigger, not full speech-to-text.
 
 ## PC Relay With Ollama
 
@@ -135,10 +145,14 @@ python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model 
 The relay:
 
 - initializes the XIAO Sense camera/mic bridge
+- sets the XIAO to 3-second snapshot mode with live mic events
 - periodically asks the XIAO for a camera capture
+- forwards `XIAO_CMD ...` lines from CYD to the XIAO so CYD menus can change S3 settings while direct BLE is paused
 - forwards `BUDDY event ...` lines to the CYD as `event ...`
 - asks Ollama for short Gemma responses; set `OLLAMA_URL` or pass `--ollama-url`
 - sends Gemma text to the CYD as `say ...`
+
+The relay does not transcribe speech yet. If you ask "what is the weather" out loud, the S3 can currently report that speech happened or that the wake-name was heard, but a speech-to-text layer still needs to be added before Ollama can receive the actual words.
 
 For testing without the CYD:
 
@@ -185,10 +199,12 @@ When both boards are powered from a power bank, they can work without NukeBox or
   - `event vision:busy`
 - CYD maps those events into moods and phrases locally when events arrive by serial/relay.
 
-The XIAO Sense can get hot if the camera/mic are treated like a live stream. Use snapshot mode by default:
+The XIAO Sense can get hot if the camera is treated like a live video stream. Use snapshot mode with live mic events by default:
 
 ```text
 cool
+voice on
+snapshot 3000
 capture
 status
 ```
@@ -214,6 +230,9 @@ xiao <command>
 xiao connect
 remember me as <name>
 phrase seed
+name Buddy
+train name
+scroll speed fast
 ```
 
 The password is saved locally in ESP32 preferences and is not printed by `wifi status`.

@@ -155,6 +155,8 @@ String statusLine = "tap mood, hold rotate";
 String speechLine = "";
 int speechScroll = 0;
 unsigned long lastSpeechScroll = 0;
+unsigned long speechScrollMs = 140;
+String buddyName = "Buddy";
 
 uint16_t bgColor = TFT_BLACK;
 uint16_t eyeColor = TFT_CYAN;
@@ -375,6 +377,37 @@ void loadNetworkSettings() {
   wifiConfigured = wifiSsid.length() > 0;
 }
 
+void loadVoiceSettings() {
+  prefs.begin("voice", true);
+  buddyName = prefs.getString("name", "Buddy");
+  speechScrollMs = prefs.getULong("scroll", 140);
+  prefs.end();
+  speechScrollMs = constrain((int)speechScrollMs, 50, 600);
+}
+
+void saveBuddyName(String name) {
+  name.trim();
+  if (name.length() == 0) name = "Buddy";
+  if (name.length() > 28) name = name.substring(0, 28);
+  buddyName = name;
+  prefs.begin("voice", false);
+  prefs.putString("name", buddyName);
+  prefs.end();
+  statusLine = "name saved";
+  speechLine = "My name is " + buddyName + ". Press train name and say it clearly.";
+  speechScroll = 0;
+}
+
+void saveSpeechScroll(unsigned long ms) {
+  speechScrollMs = constrain((int)ms, 50, 600);
+  prefs.begin("voice", false);
+  prefs.putULong("scroll", speechScrollMs);
+  prefs.end();
+  statusLine = String("scroll ") + speechScrollMs + "ms";
+  speechLine = "Text scroll speed updated.";
+  speechScroll = 0;
+}
+
 void saveWifiSsid(const String& ssid) {
   wifiSsid = ssid;
   wifiSsid.trim();
@@ -482,14 +515,18 @@ void onSenseNotify(BLERemoteCharacteristic*, uint8_t* data, size_t length, bool)
 
 bool sendSenseCommand(String command) {
   command.trim();
+  if (command.length() > 0) {
+    Serial.print("XIAO_CMD ");
+    Serial.println(command);
+  }
   if (command == "connect") {
     statusLine = "xiao ble paused";
-    speechLine = "Direct XIAO BLE is paused because attach was crashing me.";
+    speechLine = "Direct XIAO BLE is paused. Relay can forward XIAO commands.";
     speechScroll = 0;
     return true;
   }
   if (!bleConnected || !senseCommandChar || command.length() == 0) {
-    speechLine = "XIAO Sense is not connected yet.";
+    speechLine = "Queued for relay: " + command;
     speechScroll = 0;
     return false;
   }
@@ -1291,6 +1328,16 @@ void applyEvent(String event) {
     statusLine = "vision: motion";
     speechLine = "Something moved. I saw that.";
     startBlink(false);
+  } else if (event.indexOf("voice:wake") >= 0 || event.indexOf("wake:name") >= 0) {
+    currentMood = MOOD_HAPPY;
+    statusLine = "wake word";
+    speechLine = "Yeah? I heard my name.";
+    asleep = false;
+    startBlink(false);
+  } else if (event.indexOf("voice:speech") >= 0 || event.indexOf("speech") >= 0) {
+    currentMood = MOOD_NORMAL;
+    statusLine = "voice";
+    speechLine = "I hear you. Send that through the relay brain.";
   } else if (event.indexOf("face") >= 0 || event.indexOf("person") >= 0 || event.indexOf("motion") >= 0) {
     currentMood = MOOD_SURPRISED;
     statusLine = "vision: " + event;
@@ -1581,18 +1628,21 @@ void handleMenuItem(int item) {
     } else if (item == 1) {
       sendSenseCommand("capture");
     } else if (item == 2) {
-      sendSenseCommand("threshold 900");
+      sendSenseCommand("voice");
     } else if (item == 3) {
-      sendSenseCommand(senseStreamEvents ? "stream off" : "stream on");
+      sendSenseCommand("snapshot 3000");
       senseStreamEvents = !senseStreamEvents;
     }
   } else if (menuMode == MENU_SYSTEM_AI) {
     if (item == 0) {
-      speechLine = "Ollama host: " + ollamaHost;
+      speechLine = "My name is " + buddyName + ". Use serial: name <new name>.";
+    } else if (item == 1) {
+      sendSenseCommand("wake train " + buddyName);
+      speechLine = "Say " + buddyName + " clearly now.";
     } else if (item == 2) {
-      speechLine = WiFi.status() == WL_CONNECTED ? "Online AI bridge ready for relay." : "Connect WiFi for Ollama/OpenAI relay.";
+      saveSpeechScroll(speechScrollMs <= 80 ? 180 : speechScrollMs <= 180 ? 280 : 80);
     } else if (item == 3) {
-      speakMoodPhrase(currentMood);
+      speechLine = WiFi.status() == WL_CONNECTED ? "Online AI bridge ready for relay." : "Connect WiFi for Ollama/OpenAI relay.";
     }
   } else if (menuMode == MENU_SYSTEM_WIFI) {
     if (item == 0) connectWifi();
@@ -1800,6 +1850,22 @@ void handleSerialLine(String line) {
     speechLine = line.substring(4);
     statusLine = "speaking";
     speechScroll = 0;
+  } else if (lower.startsWith("name ")) {
+    saveBuddyName(line.substring(5));
+    sendSenseCommand("wake name " + buddyName);
+    Serial.printf("name=saved %s\n", buddyName.c_str());
+  } else if (lower == "train name" || lower == "voice train" || lower == "wake train") {
+    sendSenseCommand("wake train " + buddyName);
+    speechLine = "Say " + buddyName + " clearly now.";
+    speechScroll = 0;
+  } else if (lower.startsWith("scroll speed ")) {
+    String speed = lower.substring(13);
+    speed.trim();
+    if (speed == "fast") saveSpeechScroll(80);
+    else if (speed == "normal") saveSpeechScroll(140);
+    else if (speed == "slow") saveSpeechScroll(280);
+    else saveSpeechScroll((unsigned long)constrain((int)speed.toInt(), 50, 600));
+    Serial.printf("scroll_ms=%lu\n", speechScrollMs);
   } else if (lower == "menu system") {
     openMenu(MENU_SYSTEM);
   } else if (lower == "menu face") {
@@ -1897,7 +1963,7 @@ void drawSpeechStrip() {
   if (text.length() > visibleChars) {
     String looped = text + "   " + text;
     unsigned long now = millis();
-    if (now - lastSpeechScroll > 140) {
+    if (now - lastSpeechScroll > speechScrollMs) {
       lastSpeechScroll = now;
       speechScroll++;
       if (speechScroll >= (int)(text.length() + 3)) speechScroll = 0;
@@ -1938,11 +2004,11 @@ String menuItemLabel(int i) {
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_XIAO) {
-    const char* a[] = {"Connect info", "Capture", "Mic threshold", "Stream toggle"};
+    const char* a[] = {"Connect info", "Capture", "Voice mode", "3s photos"};
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_AI) {
-    const char* a[] = {"Ollama host", "Voice input", "Online status", "Speak phrase"};
+    const char* a[] = {"Buddy name", "Train name", "Scroll speed", "Online status"};
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_WIFI) {
@@ -2038,6 +2104,7 @@ void setup() {
 
   initSDCard();
   loadNetworkSettings();
+  loadVoiceSettings();
 
   prefs.begin("cyd-buddy", true);
   int savedRotation = prefs.getInt("rotation", DEFAULT_ROTATION);
@@ -2054,7 +2121,7 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, time HH:MM, time sync, memory, blink, wink, auto, manual, speak, eye color <name|default>, pupil color <name|default>, sd status, wifi ssid <name>, wifi pass <password>, wifi connect, wifi status, ollama host <url>, xiao <command>, remember me as <name>, phrase add <mood> <phrase>");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, time HH:MM, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, train name, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi ssid <name>, wifi pass <password>, wifi connect, wifi status, ollama host <url>, xiao <command>, remember me as <name>, phrase add <mood> <phrase>");
 }
 
 void loop() {
