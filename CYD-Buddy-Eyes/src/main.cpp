@@ -149,6 +149,7 @@ unsigned long lastWifiCheckMs = 0;
 
 void handleSerialLine(String line);
 bool initSDCard();
+void setAutoMode(bool enabled);
 
 String lastEvent = "idle";
 String statusLine = "tap mood, hold rotate";
@@ -1292,6 +1293,146 @@ Mood moodFromName(String name) {
   return currentMood;
 }
 
+String voiceIntentFromEvent(String event) {
+  int at = event.indexOf("voice:cmd");
+  if (at < 0) return "";
+  String rest = event.substring(at + 9);
+  rest.trim();
+  int cut = rest.indexOf(' ');
+  if (cut >= 0) rest = rest.substring(0, cut);
+  rest.trim();
+  return rest;
+}
+
+void applyVoiceIntent(String intent) {
+  intent.trim();
+  intent.toLowerCase();
+  if (intent.length() == 0) return;
+
+  asleep = false;
+  lastInteractionMs = millis();
+  statusLine = "heard: " + intent;
+
+  if (intent == "take_picture" || intent == "take_snapshot") {
+    currentMood = MOOD_SURPRISED;
+    speechLine = "Okay. Holding still for the tiny camera ritual.";
+  } else if (intent == "look_around" || intent == "scan_room" || intent == "what_do_you_see") {
+    currentMood = MOOD_SUSPICIOUS;
+    speechLine = "Looking around. If the room is weird, I am blaming reality.";
+  } else if (intent == "tell_joke") {
+    currentMood = MOOD_EXCITED;
+    speechLine = "Why did the tiny screen get attitude? Because someone gave it a face.";
+  } else if (intent == "say_something_rude" || intent == "insult") {
+    currentMood = MOOD_ANGRY;
+    speechLine = "Fine. Your command was understood, unlike half the decisions in this room.";
+  } else if (intent == "be_nice" || intent == "compliment") {
+    currentMood = MOOD_LOVE;
+    speechLine = "You are doing pretty good. Annoyingly, I mean that.";
+  } else if (intent == "be_sarcastic" || intent == "attitude") {
+    currentMood = MOOD_SUSPICIOUS;
+    speechLine = "Oh absolutely, this is all extremely normal and not suspicious at all.";
+  } else if (intent == "be_quiet" || intent == "stop_listening") {
+    currentMood = MOOD_SLEEPY;
+    speechLine = "Quiet mode. I will judge silently.";
+  } else if (intent == "talk_more" || intent == "entertain_me") {
+    currentMood = MOOD_EXCITED;
+    speechLine = randomPhraseForMood(currentMood);
+  } else if (intent == "wake_up") {
+    currentMood = MOOD_SURPRISED;
+    speechLine = phraseFromList(WAKE_PHRASES, COUNT_OF(WAKE_PHRASES));
+  } else if (intent == "go_to_sleep" || intent == "chill" || intent == "relax") {
+    currentMood = MOOD_SLEEPY;
+    speechLine = "Alright. I am lowering the dramatic lighting.";
+  } else if (intent == "happy_mode" || intent == "get_excited" || intent == "dance" || intent == "laugh") {
+    currentMood = MOOD_HAPPY;
+    speechLine = randomPhraseForMood(MOOD_HAPPY);
+  } else if (intent == "sad_mode") {
+    currentMood = MOOD_SAD;
+    speechLine = randomPhraseForMood(MOOD_SAD);
+  } else if (intent == "angry_mode" || intent == "bad_buddy") {
+    currentMood = MOOD_ANGRY;
+    speechLine = randomPhraseForMood(MOOD_ANGRY);
+  } else if (intent == "suspicious_mode") {
+    currentMood = MOOD_SUSPICIOUS;
+    speechLine = randomPhraseForMood(MOOD_SUSPICIOUS);
+  } else if (intent == "love_mode" || intent == "good_buddy" || intent == "thank_you") {
+    currentMood = MOOD_LOVE;
+    speechLine = randomPhraseForMood(MOOD_LOVE);
+  } else if (intent == "remember_me" || intent == "remember_face" || intent == "save_memory") {
+    currentMood = MOOD_HAPPY;
+    speechLine = "I will remember this. Probably with unnecessary commentary.";
+  } else if (intent == "forget_me" || intent == "forget_face" || intent == "clear_memory") {
+    currentMood = MOOD_SAD;
+    speechLine = "Forgetting things. Very dramatic. Very mysterious.";
+  } else if (intent == "connect_wifi" || intent == "use_online" || intent == "use_ollama" || intent == "start_ai") {
+    currentMood = MOOD_EXCITED;
+    speechLine = "Online brain requested. If WiFi and Ollama are reachable, I get smarter.";
+  } else if (intent == "use_offline" || intent == "stop_ai") {
+    currentMood = MOOD_NORMAL;
+    speechLine = "Offline mode. Local sass only.";
+  } else if (intent == "weather" || intent == "time" || intent == "date") {
+    currentMood = MOOD_NORMAL;
+    speechLine = "That needs the online bridge for a fresh answer.";
+  } else if (intent == "battery" || intent == "system_status" || intent == "mood_status" || intent == "xiao_status" || intent == "status") {
+    currentMood = MOOD_NORMAL;
+    speechLine = String("Status: mood ") + moodNames[currentMood] + ", SD " + (sdReady ? "ready" : "missing") + ", XIAO " + (bleConnected ? "linked" : "waiting");
+  } else if (intent == "who_are_you" || intent == "what_is_name" || intent == "my_name" || intent == "say_name") {
+    currentMood = MOOD_HAPPY;
+    speechLine = "I am " + buddyName + ". Tiny face, large opinions.";
+  } else if (intent == "greet" || intent == "call_me" || intent == "wake_name" || intent == "train_name") {
+    currentMood = MOOD_HAPPY;
+    speechLine = "Hey. I heard the name command. Custom wake word still needs a custom model.";
+  } else if (intent == "take_note" || intent == "read_note" || intent == "learn_this" || intent == "forget_that") {
+    currentMood = MOOD_NORMAL;
+    speechLine = "Notes and learning need the next memory bridge pass.";
+  } else if (intent == "camera_on" || intent == "camera_off" || intent == "mic_on" || intent == "mic_off" || intent == "start_snapshots" || intent == "stop_snapshots") {
+    currentMood = MOOD_NORMAL;
+    speechLine = "Sensor command received. I will pass that to the Sense side.";
+  } else if (intent == "louder" || intent == "quieter" || intent == "repeat" || intent == "explain") {
+    currentMood = MOOD_NORMAL;
+    speechLine = "Voice output is waiting on the speaker, but the command is mapped.";
+  } else if (intent == "yes" || intent == "no" || intent == "maybe") {
+    currentMood = intent == "yes" ? MOOD_HAPPY : intent == "no" ? MOOD_SUSPICIOUS : MOOD_NORMAL;
+    speechLine = "Noted. I will pretend this was a democratic process.";
+  } else if (intent == "bored" || intent == "sing") {
+    currentMood = MOOD_EXCITED;
+    speechLine = phraseFromList(BORED_PHRASES, COUNT_OF(BORED_PHRASES));
+  } else if (intent == "night_mode" || intent == "dark_eyes") {
+    currentMood = MOOD_SLEEPY;
+    speechLine = "Night mode. I am becoming dramatically low light.";
+  } else if (intent == "day_mode" || intent == "bright_eyes") {
+    currentMood = MOOD_HAPPY;
+    speechLine = "Day mode. Bright eyes, questionable judgement.";
+  } else if (intent == "random_mood") {
+    currentMood = (Mood)random(0, MOOD_COUNT);
+    speechLine = randomPhraseForMood(currentMood);
+  } else if (intent == "manual_mode") {
+    setAutoMode(false);
+    speechLine = "Manual mode. Temporarily obedient.";
+  } else if (intent == "auto_mode") {
+    setAutoMode(true);
+    speechLine = "Auto mode. Opinions restored.";
+  } else if (intent == "help" || intent == "menu" || intent == "settings") {
+    currentMood = MOOD_NORMAL;
+    speechLine = "Use the corner menus for settings. Voice menus are mapped now.";
+  } else if (intent == "pair_cyd") {
+    currentMood = MOOD_EXCITED;
+    speechLine = "Pairing requested. The wireless bridge is the next mobile piece.";
+  } else if (intent == "see_me" || intent == "identify_me") {
+    currentMood = MOOD_HAPPY;
+    speechLine = "Recognition request received. Face memory comes after camera events.";
+  } else if (intent == "hear_sound" || intent == "noise_status") {
+    currentMood = MOOD_SURPRISED;
+    speechLine = "Audio awareness is awake. I am listening for chaos.";
+  } else {
+    currentMood = MOOD_NORMAL;
+    speechLine = "I heard " + intent + ". I do not have a better comeback yet.";
+  }
+
+  speechScroll = 0;
+  startBlink(false);
+}
+
 void applyEvent(String event) {
   event.trim();
   event.toLowerCase();
@@ -1300,7 +1441,10 @@ void applyEvent(String event) {
   lastEvent = event;
   lastMoodAuto = millis();
 
-  if (event.indexOf("person:") >= 0) {
+  String voiceIntent = voiceIntentFromEvent(event);
+  if (voiceIntent.length() > 0) {
+    applyVoiceIntent(voiceIntent);
+  } else if (event.indexOf("person:") >= 0) {
     int sep = event.indexOf("person:");
     String name = event.substring(sep + 7);
     name.trim();
