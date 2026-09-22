@@ -263,6 +263,24 @@ Passive late-night telemetry, such as low room light, normal watch, GPS no-fix n
 
 Buddy's heartbeat also sends a richer pet/AI state packet for the Spac3-Gh0st dock: care stats, interaction counters, learned preferences, memory snippets, current speech/personality, lifecycle/dead-timer data, and a tiny local AI summary. The Spac3 dock should only show that expanded state while CYD Buddy is connected and heartbeating.
 
+### Settings pushed from the dashboard
+
+The Spac3-Gh0st "Buddy Settings Console" (Externals tab) can push a settings change without
+touching the CYD directly. CYD picks it up from the `settings.pending_command` field in the next
+`/api/cyd/telemetry` poll and applies it immediately:
+
+- Backlight percent (real PWM backlight control; previously the screen was always full brightness)
+- Sleep-after seconds (now a real configurable idle timeout; previously always a hardcoded 30 min)
+- Eye theme: `default` (mood-driven), `matrix`, `night`, `amber`, `mono` (sets eye + pupil color)
+- Mood: `auto` or any real mood name from the list above; a manual mood holds for ~10 minutes, same as `mood <name>` over serial
+- Personality: `sassy`, `sweet`, `rude`, `nerdy`, `chill`, `chaotic`
+- Phrase scroll speed (ms)
+- SD phrase bank on/off
+
+CYD acknowledges the applied command on its next heartbeat (`command_ack` field) so the dashboard
+clears the "pending" indicator. Each command is applied at most once (by its id), so a repeated
+telemetry poll before the dashboard sees the ack does not reapply it.
+
 Useful serial commands:
 
 ```text

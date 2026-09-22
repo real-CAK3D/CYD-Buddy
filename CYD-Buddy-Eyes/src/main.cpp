@@ -256,6 +256,10 @@ unsigned long wifiScanStartedMs = 0;
 bool statsViewActive = false;
 int statsViewPage = 0;
 bool sdPhraseLookupEnabled = false;
+uint8_t backlightPercent = 100;
+unsigned long idleSleepMs = 1800000UL;  // 30 min default, matches the old hardcoded threshold
+String lastAppliedSpac3CommandId = "";
+String pendingSpac3Ack = "";
 bool buddyMemoryDirty = false;
 String statsMemoryPreview;
 unsigned long statsMemoryPreviewMs = 0;
@@ -298,6 +302,8 @@ int touchCalRawY[2] = {DEFAULT_TOUCH_Y_MIN, DEFAULT_TOUCH_Y_MAX};
 void handleSerialLine(String line);
 bool initSDCard();
 void setAutoMode(bool enabled);
+Mood moodFromName(String name);
+Personality personalityFromName(String name);
 void connectWifi();
 void setUnixBaseFromClock();
 void settleDeadTimeFromClock(bool force = false);
@@ -1600,9 +1606,14 @@ void loadVoiceSettings() {
   speechScrollMs = prefs.getULong("scroll", 140);
   speechFlashMode = prefs.getBool("flash", false);
   int savedPersonality = prefs.getInt("personality", PERSONALITY_SASSY);
+  backlightPercent = prefs.getUChar("backlight", 100);
+  unsigned long savedSleepSec = prefs.getULong("sleepsec", 1800);
   prefs.end();
   speechScrollMs = constrain((int)speechScrollMs, 50, 600);
   currentPersonality = (Personality)constrain(savedPersonality, 0, PERSONALITY_COUNT - 1);
+  backlightPercent = (uint8_t)constrain((int)backlightPercent, 5, 100);
+  idleSleepMs = constrain(savedSleepSec, 30UL, 3600UL) * 1000UL;
+  setBacklight((uint8_t)map(backlightPercent, 0, 100, 12, 255));
 }
 
 void saveBuddyName(String name) {
@@ -1658,6 +1669,51 @@ void savePersonality(Personality personality) {
   statusLine = String("personality: ") + personalityNames[currentPersonality];
   speechLine = "Personality set to " + String(personalityNames[currentPersonality]) + ".";
   speechScroll = 0;
+}
+
+void saveBacklightPercent(uint8_t pct) {
+  backlightPercent = (uint8_t)constrain((int)pct, 5, 100);
+  setBacklight((uint8_t)map(backlightPercent, 0, 100, 12, 255));
+  prefs.begin("voice", false);
+  prefs.putUChar("backlight", backlightPercent);
+  prefs.end();
+  statusLine = String("backlight ") + backlightPercent + "%";
+}
+
+void saveIdleSleepSeconds(unsigned long seconds) {
+  seconds = constrain(seconds, 30UL, 3600UL);
+  idleSleepMs = seconds * 1000UL;
+  prefs.begin("voice", false);
+  prefs.putULong("sleepsec", seconds);
+  prefs.end();
+  statusLine = String("sleep after ") + seconds + "s";
+}
+
+void applyEyeTheme(String theme) {
+  theme.trim();
+  theme.toLowerCase();
+  String eyeName, pupilName;
+  if (theme == "matrix") { eyeName = "green"; pupilName = "lime"; }
+  else if (theme == "night") { eyeName = "navy"; pupilName = "default"; }
+  else if (theme == "amber") { eyeName = "amber"; pupilName = "amber"; }
+  else if (theme == "mono") { eyeName = "white"; pupilName = "default"; }
+  else {
+    moodEyeColorEnabled = true;
+    customPupilColor = false;
+    statusLine = "eye color default";
+    return;
+  }
+  moodEyeColorEnabled = false;
+  eyeColorIndex = colorIndexFromName(eyeName, eyeColorIndex);
+  eyeColor = colorFromName(eyeName, COLOR_CHOICES[eyeColorIndex]);
+  if (pupilName == "default") {
+    customPupilColor = false;
+  } else {
+    pupilColorIndex = colorIndexFromName(pupilName, pupilColorIndex);
+    pupilColor = colorFromName(pupilName, COLOR_CHOICES[pupilColorIndex]);
+    customPupilColor = true;
+  }
+  statusLine = String("theme: ") + theme;
 }
 
 void cyclePersonality() {
@@ -1989,6 +2045,41 @@ String jsonStringAfter(const String& body, const char* marker, const char* key, 
 
 String jsonStringValue(const String& body, const char* key, const String& fallback = "") {
   return jsonStringAfter(body, "", key, fallback);
+}
+
+float jsonNumberFrom(const String& body, int start, const char* key, float fallback = NAN) {
+  if (start < 0) return fallback;
+  String pattern = String("\"") + key + "\":";
+  int at = body.indexOf(pattern, start);
+  if (at < 0) return fallback;
+  at += pattern.length();
+  while (at < body.length() && (body[at] == ' ' || body[at] == '\t')) at++;
+  int end = at;
+  while (end < body.length()) {
+    char c = body[end];
+    if (!((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.')) break;
+    end++;
+  }
+  if (end <= at) return fallback;
+  return body.substring(at, end).toFloat();
+}
+
+int jsonIntFrom(const String& body, int start, const char* key, int fallback = -1) {
+  float value = jsonNumberFrom(body, start, key, NAN);
+  if (isnan(value)) return fallback;
+  return (int)value;
+}
+
+bool jsonBoolFrom(const String& body, int start, const char* key, bool fallback) {
+  if (start < 0) return fallback;
+  String pattern = String("\"") + key + "\":";
+  int at = body.indexOf(pattern, start);
+  if (at < 0) return fallback;
+  at += pattern.length();
+  while (at < body.length() && (body[at] == ' ' || body[at] == '\t')) at++;
+  if (body.startsWith("true", at)) return true;
+  if (body.startsWith("false", at)) return false;
+  return fallback;
 }
 
 Mood moodFromSpac3(String mood, float cpuC, int alertScore) {
@@ -2345,6 +2436,47 @@ void applySpac3Telemetry(const String& body) {
   }
 }
 
+void applySpac3PendingCommand(const String& body) {
+  int pcIdx = body.indexOf("\"pending_command\"");
+  if (pcIdx < 0) return;
+  int colon = body.indexOf(':', pcIdx);
+  if (colon < 0) return;
+  int at = colon + 1;
+  while (at < body.length() && (body[at] == ' ' || body[at] == '\t')) at++;
+  if (at >= body.length() || body[at] != '{') return;  // null: no command queued
+  String id = jsonStringAfter(body, "\"pending_command\"", "id", "");
+  if (id.length() == 0 || id == lastAppliedSpac3CommandId) return;
+  String action = jsonStringAfter(body, "\"pending_command\"", "action", "");
+  if (action == "save" || action == "settings") {
+    int b = jsonIntFrom(body, pcIdx, "brightness", -1);
+    if (b >= 5 && b <= 100) saveBacklightPercent((uint8_t)b);
+    int sleepSec = jsonIntFrom(body, pcIdx, "sleep_s", -1);
+    if (sleepSec >= 10) saveIdleSleepSeconds((unsigned long)sleepSec);
+    String theme = jsonStringAfter(body, "\"pending_command\"", "theme", "");
+    if (theme.length()) applyEyeTheme(theme);
+    String moodName = jsonStringAfter(body, "\"pending_command\"", "mood", "");
+    if (moodName.length()) {
+      if (moodName == "auto") {
+        setAutoMode(true);
+      } else {
+        setAutoMode(false);
+        currentMood = moodFromName(moodName);
+        manualMoodHoldUntil = millis() + 10UL * 60UL * 1000UL;
+      }
+    }
+    String personalityName = jsonStringAfter(body, "\"pending_command\"", "personality", "");
+    if (personalityName.length()) savePersonality(personalityFromName(personalityName));
+    int scrollMs = jsonIntFrom(body, pcIdx, "scroll_ms", -1);
+    if (scrollMs >= 20) saveSpeechScroll((unsigned long)scrollMs);
+    sdPhraseLookupEnabled = jsonBoolFrom(body, pcIdx, "sd_lookup", sdPhraseLookupEnabled);
+    speechLine = "Spac3 dashboard updated my settings.";
+    speechScroll = 0;
+  }
+  lastAppliedSpac3CommandId = id;
+  pendingSpac3Ack = id;
+  statusLine = "spac3 settings applied";
+}
+
 bool fetchSpac3Telemetry(bool announceFailure = false) {
   if (!spac3TelemetryEnabled || WiFi.status() != WL_CONNECTED) return false;
   HTTPClient http;
@@ -2368,6 +2500,7 @@ bool fetchSpac3Telemetry(bool announceFailure = false) {
   String body = http.getString();
   http.end();
   applySpac3Telemetry(body);
+  applySpac3PendingCommand(body);
   return true;
 }
 
@@ -2385,9 +2518,13 @@ bool sendSpac3Heartbeat() {
   body += "\"mood\":\"" + jsonEscape(String(moodNames[currentMood])) + "\",";
   body += "\"message\":\"" + jsonEscape(speechLine) + "\",";
   body += buddyStatsJson();
+  if (pendingSpac3Ack.length()) {
+    body += ",\"command_ack\":\"" + jsonEscape(pendingSpac3Ack) + "\"";
+  }
   body += "}";
   int code = http.POST(body);
   http.end();
+  if (code >= 200 && code < 300) pendingSpac3Ack = "";
   return code >= 200 && code < 300;
 }
 
@@ -3614,7 +3751,7 @@ void updateBuddy() {
     }
   }
 
-  if (quietAuto && ((timeIsLateNight() && idleMs > 900000UL) || idleMs > 1800000UL)) {
+  if (quietAuto && ((timeIsLateNight() && idleMs > idleSleepMs / 2) || idleMs > idleSleepMs)) {
     if (!asleep) {
       buddyBoredCount++;
       currentMood = MOOD_SLEEPY;
@@ -3626,7 +3763,7 @@ void updateBuddy() {
     }
     targetGazeX = 0;
     targetGazeY = 8;
-  } else if (quietAuto && idleMs > 600000UL) {
+  } else if (quietAuto && idleMs > idleSleepMs / 3) {
     if (currentMood != MOOD_SLEEPY || now - lastIdleMoodMs > 60000UL) {
       currentMood = MOOD_SLEEPY;
       statusLine = "sleepy";
