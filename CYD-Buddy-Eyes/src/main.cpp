@@ -322,6 +322,41 @@ int speechFlashSegment = 0;
 unsigned long lastSpeechFlashMs = 0;
 String buddyName = "Buddy";
 
+bool timeIsEarlyAM();
+bool timeIsMorning();
+bool timeIsEvening();
+bool timeIsLateNight();
+String holidayName(int year, int month, int day);
+bool isFourTwentyTime();
+bool isFourTwentyDay();
+
+String activePersonaName() {
+  String holiday = holidayName(dateYear, dateMonth, dateDay);
+  holiday.toLowerCase();
+  if (isFourTwentyDay() || isFourTwentyTime()) return "stoner";
+  if (holiday.indexOf("halloween") >= 0) return "halloween";
+  if (holiday.indexOf("christmas") >= 0) return "christmas";
+  if (holiday.indexOf("easter") >= 0) return "easter";
+  if (currentMood == MOOD_BORED || buddyPlayNeed > 75) return "bored";
+  if (currentPersonality == PERSONALITY_NERDY) return "intellect";
+  if (timeIsEarlyAM()) return "early-am";
+  if (timeIsMorning()) return "morning";
+  if (timeIsEvening() || timeIsLateNight()) return "night";
+  return "daytime";
+}
+
+Mood personaMood(Mood fallback) {
+  String persona = activePersonaName();
+  if (persona == "stoner") return MOOD_STONER;
+  if (persona == "halloween") return random(0, 100) < 55 ? MOOD_SUSPICIOUS : MOOD_HIPPY;
+  if (persona == "christmas") return random(0, 100) < 55 ? MOOD_LOVE : MOOD_EXCITED;
+  if (persona == "easter") return random(0, 100) < 55 ? MOOD_HAPPY : MOOD_LOVE;
+  if (persona == "night") return random(0, 100) < 65 ? MOOD_SLEEPY : MOOD_SUSPICIOUS;
+  if (persona == "morning") return random(0, 100) < 70 ? MOOD_HAPPY : MOOD_NORMAL;
+  if (persona == "bored") return MOOD_BORED;
+  return fallback;
+}
+
 uint16_t bgColor = TFT_BLACK;
 uint16_t eyeColor = TFT_CYAN;
 uint16_t pupilColor = TFT_NAVY;
@@ -475,6 +510,23 @@ int lastWeekdayOfMonth(int year, int month, int weekday) {
   return last - ((lastDow - weekday + 7) % 7);
 }
 
+void easterDate(int year, int& month, int& day) {
+  int a = year % 19;
+  int b = year / 100;
+  int c = year % 100;
+  int d = b / 4;
+  int e = b % 4;
+  int f = (b + 8) / 25;
+  int g = (b - f + 1) / 3;
+  int h = (19 * a + b - d - g + 15) % 30;
+  int i = c / 4;
+  int k = c % 4;
+  int l = (32 + 2 * e + 2 * i - h - k) % 7;
+  int m = (a + 11 * h + 22 * l) / 451;
+  month = (h + l - 7 * m + 114) / 31;
+  day = ((h + l - 7 * m + 114) % 31) + 1;
+}
+
 int currentSeasonIndexForMonth(int month, float lat, bool hasLocation) {
   int m = constrain(month, 1, 12);
   bool southern = hasLocation && lat < -0.1f;
@@ -487,11 +539,16 @@ int currentSeasonIndexForMonth(int month, float lat, bool hasLocation) {
 }
 
 String holidayName(int year, int month, int day) {
+  int easterMonth = 0;
+  int easterDay = 0;
+  easterDate(year, easterMonth, easterDay);
   if (month == 1 && day == 1) return "New Year's Day";
   if (month == 1 && day == nthWeekdayOfMonth(year, 1, 1, 3)) return "Martin Luther King Jr. Day";
   if (month == 2 && day == 14) return "Valentine's Day";
   if (month == 2 && day == nthWeekdayOfMonth(year, 2, 1, 3)) return "Presidents Day";
   if (month == 3 && day == 17) return "St. Patrick's Day";
+  if (month == easterMonth && day == easterDay) return "Easter";
+  if (month == 4 && day == 20) return "4/20";
   if (month == 5 && day == lastWeekdayOfMonth(year, 5, 1)) return "Memorial Day";
   if (month == 6 && day == 19) return "Juneteenth";
   if (month == 7 && day == 4) return "Independence Day";
@@ -503,6 +560,15 @@ String holidayName(int year, int month, int day) {
   if (month == 12 && day == 25) return "Christmas Day";
   if (month == 12 && day == 31) return "New Year's Eve";
   return "";
+}
+
+bool isFourTwentyTime() {
+  int m = minuteOfDay();
+  return abs(m - (4 * 60 + 20)) <= 10 || abs(m - (16 * 60 + 20)) <= 10;
+}
+
+bool isFourTwentyDay() {
+  return dateMonth == 4 && dateDay == 20;
 }
 
 String calendarContextLine() {
@@ -893,6 +959,11 @@ String timeDateLine() {
 
 uint16_t moodEyeColor() {
   if (!moodEyeColorEnabled) return eyeColor;
+  String persona = activePersonaName();
+  if (persona == "stoner") return tft.color565(255, 170, 198);
+  if (persona == "halloween") return TFT_ORANGE;
+  if (persona == "christmas") return (millis() / 700) % 2 ? TFT_RED : TFT_GREEN;
+  if (persona == "easter") return TFT_PINK;
   if (timeIsEarlyAM()) return TFT_YELLOW;
   if (timeIsMorning()) return TFT_SKYBLUE;
   if (timeIsEvening() || timeIsLateNight()) return TFT_NAVY;
@@ -3009,6 +3080,10 @@ const char* const AUTO_TAP_PHRASES[] = {
 };
 
 String randomPhraseForMood(Mood mood) {
+  Mood contextual = personaMood(MOOD_COUNT);
+  if (contextual != MOOD_COUNT && random(0, 100) < 55) {
+    mood = contextual;
+  }
   if (!sdPhraseLookupEnabled) {
     if (random(0, 100) < 28) return generatedPreferencePhrase(random(0, 200), currentPersonality);
     return generatedMoodPhrase(moodNames[mood], random(0, 250), currentPersonality);
@@ -3051,6 +3126,10 @@ void speakMoodPhrase(Mood mood) {
 }
 
 Mood livelyMoodChoice(unsigned long idleMs) {
+  if (random(0, 100) < 45) {
+    Mood persona = personaMood(MOOD_COUNT);
+    if (persona != MOOD_COUNT) return persona;
+  }
   if (buddyHealthTenth < 180 && random(0, 100) < 25) return random(0, 2) ? MOOD_SAD : MOOD_ANGRY;
   if (buddyHunger > 90 && random(0, 100) < 35) return MOOD_ANGRY;
   if (buddyPlayNeed > 80 && random(0, 100) < 45) return MOOD_RESTLESS;
@@ -3592,7 +3671,11 @@ void updateBuddy() {
     int roll = random(0, 100);
     int currentSeason = currentSeasonIndex();
     int currentTime = currentTimePreferenceIndex();
-    if (buddyHealthTenth < 250) {
+    Mood contextual = personaMood(MOOD_COUNT);
+    if (contextual != MOOD_COUNT && roll < 62) {
+      currentMood = contextual;
+      statusLine = String("persona: ") + activePersonaName();
+    } else if (buddyHealthTenth < 250) {
       currentMood = MOOD_SAD;
       statusLine = "low health";
     } else if (buddyHunger > 95 && buddyAnxiety > 85) {
@@ -4938,6 +5021,15 @@ void handleSerialLine(String line) {
     Personality next = personalityFromName(name);
     savePersonality(next);
     Serial.printf("personality=%s\n", personalityNames[currentPersonality]);
+  } else if (lower == "persona") {
+    String holiday = holidayName(dateYear, dateMonth, dateDay);
+    Serial.printf("persona=%s holiday=%s fourtwenty=%s mood=%s\n",
+                  activePersonaName().c_str(),
+                  holiday.length() ? holiday.c_str() : "none",
+                  (isFourTwentyDay() || isFourTwentyTime()) ? "true" : "false",
+                  moodNames[currentMood]);
+    speechLine = "Persona: " + activePersonaName() + ".";
+    speechScroll = 0;
   } else if (lower == "menu system") {
     openMenu(MENU_SYSTEM);
   } else if (lower.startsWith("menu item ")) {
@@ -4950,7 +5042,7 @@ void handleSerialLine(String line) {
     menuMode = MENU_NONE;
     statusLine = "menu closed";
   } else if (lower == "diag" || lower == "diagnostics") {
-    Serial.printf("diag frame=%s size=%dx%d rotation=%d mood=%s mode=%s menu=%d overlays wifi=%s time=%s schedule=%s stats=%s touchcal=%s heap=%u sd=%s phrase_sd=%s wifi=%s ssid_saved=%s weather=%s spac3=%s spac3_ok=%s name=%s personality=%s speech_mode=%s scroll=%lums health=%s strength=%d armor=%d\n",
+    Serial.printf("diag frame=%s size=%dx%d rotation=%d mood=%s mode=%s menu=%d overlays wifi=%s time=%s schedule=%s stats=%s touchcal=%s heap=%u sd=%s phrase_sd=%s wifi=%s ssid_saved=%s weather=%s spac3=%s spac3_ok=%s name=%s personality=%s persona=%s speech_mode=%s scroll=%lums health=%s strength=%d armor=%d\n",
                   frameOk ? "ok" : "failed",
                   screenW,
                   screenH,
@@ -4973,6 +5065,7 @@ void handleSerialLine(String line) {
                   spac3TelemetryOk ? "true" : "false",
                   buddyName.c_str(),
                   personalityNames[currentPersonality],
+                  activePersonaName().c_str(),
                   speechFlashMode ? "flash" : "scroll",
                   speechScrollMs,
                   healthLabel().c_str(),
@@ -5178,6 +5271,123 @@ void processSerial() {
   }
 }
 
+String normalizedWord(String word) {
+  word.trim();
+  word.toLowerCase();
+  String out;
+  for (int i = 0; i < word.length(); i++) {
+    char c = word[i];
+    bool keep = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '/';
+    if (keep) out += c;
+  }
+  return out;
+}
+
+bool wordInList(const String& word, const char* const* words, int count) {
+  for (int i = 0; i < count; i++) {
+    if (word == words[i]) return true;
+  }
+  return false;
+}
+
+uint16_t holidaySpeechColor() {
+  String holiday = holidayName(dateYear, dateMonth, dateDay);
+  holiday.toLowerCase();
+  if (holiday.indexOf("halloween") >= 0) return TFT_ORANGE;
+  if (holiday.indexOf("christmas") >= 0) return TFT_GREEN;
+  if (holiday.indexOf("easter") >= 0) return TFT_PINK;
+  if (holiday.indexOf("valentine") >= 0) return TFT_PINK;
+  if (holiday.indexOf("4/20") >= 0) return TFT_GREENYELLOW;
+  return TFT_WHITE;
+}
+
+void styleForWord(String raw, uint16_t& color, bool& bold, bool& italic) {
+  String word = normalizedWord(raw);
+  color = TFT_WHITE;
+  bold = false;
+  italic = false;
+  const char* const swearWords[] = {
+    "damn", "hell", "crap", "bullshit", "shit", "pissed", "ass", "smartass"
+  };
+  const char* const sarcasmWords[] = {
+    "fine", "sure", "obviously", "apparently", "probably", "somehow",
+    "congratulations", "respectfully", "brave", "excellent", "spectacular"
+  };
+  const char* const stonerWords[] = {
+    "stoner", "420", "4/20", "vibe", "vibes", "snacks", "fog", "beanbag", "profound"
+  };
+  const char* const holidayWords[] = {
+    "christmas", "easter", "halloween", "valentine", "holiday", "thanksgiving", "party"
+  };
+  const char* const moodWords[] = {
+    "angry", "sad", "happy", "sleepy", "bored", "restless", "anxious", "love", "excited"
+  };
+
+  if (wordInList(word, swearWords, COUNT_OF(swearWords))) {
+    color = TFT_RED;
+    bold = true;
+  } else if (wordInList(word, sarcasmWords, COUNT_OF(sarcasmWords))) {
+    color = TFT_SKYBLUE;
+    italic = true;
+  } else if (wordInList(word, stonerWords, COUNT_OF(stonerWords))) {
+    color = TFT_GREENYELLOW;
+    italic = true;
+  } else if (wordInList(word, holidayWords, COUNT_OF(holidayWords))) {
+    color = holidaySpeechColor();
+    bold = true;
+  } else if (wordInList(word, moodWords, COUNT_OF(moodWords))) {
+    color = moodEyeColor();
+    bold = true;
+  } else if (word == "tiny" || word == "weird" || word == "chaos" || word == "dramatic") {
+    color = TFT_MAGENTA;
+  } else if (activePersonaName() == "night") {
+    color = TFT_LIGHTGREY;
+  }
+}
+
+void drawStyledSpeechText(String text, int centerX, int y) {
+  text.trim();
+  if (text.length() == 0) return;
+  const int font = 2;
+  const int spaceW = frame.textWidth(" ", font);
+  String parts[18];
+  int count = 0;
+  int start = 0;
+  while (start < text.length() && count < (int)COUNT_OF(parts)) {
+    while (start < text.length() && text[start] == ' ') start++;
+    if (start >= text.length()) break;
+    int end = text.indexOf(' ', start);
+    if (end < 0) end = text.length();
+    parts[count++] = text.substring(start, end);
+    start = end + 1;
+  }
+
+  int totalW = 0;
+  for (int i = 0; i < count; i++) {
+    totalW += frame.textWidth(parts[i], font);
+    if (i + 1 < count) totalW += spaceW;
+  }
+  int x = centerX - totalW / 2;
+  frame.setTextDatum(ML_DATUM);
+  for (int i = 0; i < count; i++) {
+    uint16_t color;
+    bool bold;
+    bool italic;
+    styleForWord(parts[i], color, bold, italic);
+    int wordW = frame.textWidth(parts[i], font);
+    int yOffset = italic ? ((i % 2 == 0) ? -1 : 1) : 0;
+    frame.setTextColor(color, bgColor);
+    frame.drawString(parts[i], x, y + yOffset, font);
+    if (bold) {
+      frame.drawString(parts[i], x + 1, y + yOffset, font);
+    }
+    if (italic) {
+      frame.drawString(parts[i], x + 1, y + yOffset - 1, font);
+    }
+    x += wordW + spaceW;
+  }
+}
+
 void drawSpeechStrip() {
   int y = screenH - 27;
   String text = speechLine;
@@ -5238,9 +5448,7 @@ void drawSpeechStrip() {
     speechScroll = 0;
   }
 
-  frame.setTextDatum(MC_DATUM);
-  frame.setTextColor(TFT_WHITE, bgColor);
-  frame.drawString(shown, screenW / 2, y, 2);
+  drawStyledSpeechText(shown, screenW / 2, y);
 }
 
 void drawInfoStrip() {
@@ -5665,7 +5873,7 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, feed, play, boost, calm, care reset, health, calendar, preferences, memory add <note>, memory think, preference seed, prefer season summer, prefer month october, prefer time night, prefer activity playing, dislike season winter, bt seen <name>, date YYYY-MM-DD, time HH:MM, timezone -5, dst on|off, clock 12|24, schedule <early|morning|day|latepm|night|latenight> HH:MM, lifecycle, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, personality <name|next>, speech mode <scroll|flash>, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi setup, wifi ssid <name>, wifi pass <password>, wifi connect, wifi scan, wifi status, weather loc <lat> <lon>, weather update, weather status, ollama host <url>, spac3 host <url>, spac3 update, spac3 status, spac3 on|off, remember me as <name>, phrase add <mood> <phrase>, phrase expand");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, feed, play, boost, calm, care reset, health, calendar, preferences, memory add <note>, memory think, preference seed, prefer season summer, prefer month october, prefer time night, prefer activity playing, dislike season winter, bt seen <name>, date YYYY-MM-DD, time HH:MM, timezone -5, dst on|off, clock 12|24, schedule <early|morning|day|latepm|night|latenight> HH:MM, lifecycle, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, personality <name|next>, persona, speech mode <scroll|flash>, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi setup, wifi ssid <name>, wifi pass <password>, wifi connect, wifi scan, wifi status, weather loc <lat> <lon>, weather update, weather status, ollama host <url>, spac3 host <url>, spac3 update, spac3 status, spac3 on|off, remember me as <name>, phrase add <mood> <phrase>, phrase expand");
   if (wifiConfigured) connectWifi();
 }
 
