@@ -14,6 +14,8 @@
 #define TFT_BL   21
 #define TFT_BACKLIGHT_ON HIGH
 
+#define TOUCH_CS 33
+
 #define LOAD_GLCD
 #define LOAD_FONT2
 #define LOAD_FONT4

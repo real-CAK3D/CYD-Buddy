@@ -1,6 +1,6 @@
 # CYD-Buddy
 
-Firmware for a CYD / ESP32-2432S028R desk-buddy face. The current build runs animated eyes, moods, corner menus, a transparent speech line, serial commands, and a dedicated SD-card phrase-bank folder.
+Firmware for a CYD / ESP32-2432S028R desk-buddy face. This project is now CYD-only: animated eyes, moods, touch reactions, corner menus, Wi-Fi setup, serial commands, and an SD-card phrase bank all run on the CYD itself.
 
 ## Project
 
@@ -23,11 +23,40 @@ python -m platformio run -t upload --upload-port COM8
 
 Use the live port shown by Windows if it is not `COM8`.
 
+## CYD-Only Scope
+
+The XIAO ESP32S3 Sense path has been removed. CYD Buddy no longer scans for BLE sensors, sends XIAO commands, or expects a camera/microphone companion board.
+
+What remains:
+
+- Touch personality: boop, pet, tickle, eye-poke, idle, bored, sleepy, and wake reactions.
+- Mood system: auto/manual modes, selectable personalities, mood-driven eyes, time-of-day colors, custom eye/pupil colors, plus stoner/drunk/hippy and bored/restless/anxious life moods.
+- Life stats: health, hunger, play need, restlessness, anxiety, strength, armor, touch counters, directional swipes, missed feedings, and new Wi-Fi/Bluetooth discovery memory.
+- Lifecycle stats: boot count, power-loss death count, total alive time, current session time, and estimated dead time between boots.
+- Menus: system menu, face menu, on-screen Wi-Fi setup, AI/personality settings, phrase bank, mood/eye/color controls.
+- Time/date/weather: Wi-Fi can sync time and fetch current weather from Open-Meteo after latitude/longitude are saved.
+- SD phrase bank: built-in phrases plus optional `/cydbuddy/phrases.csv`.
+- Wi-Fi setup: save SSID/password locally, connect, sync time, save an Ollama host URL.
+- Serial bridge surface: `say`, `event`, `stats`, and settings commands still work for a PC, phone, or future network bridge.
+
+What is not onboard:
+
+- No microphone on the CYD.
+- No camera on the CYD.
+- No local LLM or open-ended speech-to-text on the ESP32.
+- Voice/chat requires an external host or future separate hardware, but the CYD face no longer depends on that.
+
 ## Serial Commands
 
 ```text
 rotate [0-3]
 mood happy
+mood stoner
+mood drunk
+mood hippy
+mood bored
+mood restless
+mood anxious
 event face
 stats cpu=90 temp=80
 tap
@@ -36,18 +65,63 @@ pet
 tickle
 poke left
 wake
+feed
+play
+boost
+calm
+care reset
+health
+bt seen <bluetooth-device-name>
+preferences
+memory bank
+memory add <thing to remember>
+memory think
+preference seed
+prefer season summer
+prefer month October
+prefer time night
+prefer activity playing
+dislike season winter
 time 06:30
+date 2026-09-14
+timezone -5
+dst on
+dst off
+clock 12
+clock 24
+time edit
+schedule edit
+schedule
+schedule early 04:00
+schedule morning 07:00
+schedule day 11:00
+schedule latepm 16:00
+schedule night 20:00
+schedule latenight 23:00
+lifecycle
+time sync
 memory
+life
+stats system
+touch cal
+touch reset
 blink
 wink
 auto
 manual
 speak
 menu system
+menu item <0-4>
 menu face
 menu close
+diag
 sd status
 phrase add <mood> <phrase>
+phrase seed
+phrase fast
+phrase sd on
+phrase sd off
+phrase sd status
 eye color default
 eye color amber
 pupil color lime
@@ -55,7 +129,21 @@ pupil color default
 say <text to show on the speech line>
 scroll speed <fast|normal|slow|ms>
 name <buddy-name>
-train name
+personality
+personality next
+personality <sassy|sweet|rude|nerdy|chill|chaotic>
+wifi ssid <hotspot-or-router-name>
+wifi pass <password>
+wifi edit
+wifi setup
+wifi connect
+wifi scan
+wifi status
+weather loc <latitude> <longitude>
+weather update
+weather status
+ollama host <url>
+remember me as <name>
 ```
 
 Color names include `black`, `navy`, `blue`, `sky`, `cyan`, `teal`, `green`, `lime`, `amber`, `yellow`, `red`, `pink`, `purple`, `white`, and `gray`.
@@ -67,258 +155,144 @@ Color names include `black`, `navy`, `blue`, `sky`, `cyan`, `teal`, `green`, `li
 - Menu rows are selectable.
 - Rows can open submenus.
 - Back returns to the previous menu or closes the current top-level menu.
-- Face menus include auto/manual mode and default/fixed eye color choices.
+- System menus include AI/phrases, Wi-Fi, time/touch settings, and stats.
+- The Wi-Fi menu opens a scanned network list first. Tap a network, enter the password with the touch keyboard, then tap `SAVE` to store and connect.
+- Face menus include eyes, moods, auto/manual mode, and default/fixed eye color choices.
+- Extra moods include `stoner` with light-pink half-open eyes, `drunk` with intentionally offset blinking and drifting pupils, `hippy` with psychedelic animated colors, plus `bored`, `restless`, and `anxious`.
+- The time/touch menu opens a date/time/timezone editor, toggles 12/24-hour time, toggles daylight savings, and starts touch calibration.
+- The time/touch menu also opens a daily schedule editor for early AM, morning, daytime, late afternoon, night, and late-night start times.
+- The stats menu opens care stats, system stats, network stats, and dead-timer/lifecycle stats. Tap left/right/bottom controls to page or close.
 - In manual mode, a normal face tap cycles moods.
 - In auto mode, a normal face tap wakes or nudges the buddy to react instead of forcing the next mood.
 - Drawing/scribbling on the face tickles the buddy.
 - A gentle short stroke pets the buddy.
-- A normal face tap in auto mode boops or nudges the buddy.
+- Strong directional swipes are tracked as left/right/up/down gestures and affect mood/life stats.
 - Poking an eye makes that eye squint and increments a tiny persistent memory counter.
-- Touch reactions now rotate through larger built-in phrase pools for boops, pets, tickles, eye pokes, wakeups, boredom, and sleepy states.
+- Touch reactions rotate through built-in phrase pools for boops, pets, tickles, eye pokes, wakeups, boredom, and sleepy states.
+- Life stats slowly drift over time. Interaction lowers play/restless/anxiety needs, finding new Wi-Fi names increases strength, and remembered Bluetooth names increase armor. The drift is intentionally slow enough for a desk buddy; he should not max out hunger/restlessness just from sitting powered on for a short session.
+- `calm` lowers the current care pressure without wiping memory. `care reset` is the stronger recovery command for an obviously stuck/overstressed buddy.
+- Feeding and playing can raise health by up to 10.0 total points per 24-hour care day. Feeding has a 30-minute cooldown and playing has a 15-minute cooldown.
+- Each new care day costs 5.0 health. If the previous day had no feeding, the buddy records a missed feeding, loses another 0.5 health, gets hungrier, and gets a little more anxious.
+- The dead timer estimates powered-off time after the clock is set or Wi-Fi time syncs. Dead time costs 0.1 health per missing minute, raises hunger/play/anxiety, and is saved with lifetime/death counters.
+- `boost` is a once-per-calendar-week recovery that returns health and daily needs to 100/clear. It needs valid time from manual date/time entry or Wi-Fi sync so the CYD knows which week it is.
+- Seasons are calculated from month and saved weather latitude. Northern hemisphere uses spring/summer/fall/winter normally; southern hemisphere flips the seasons.
+- Buddy now learns preferences for season, month, time of day, activities, and weather. Good interactions, feeding, playing, Wi-Fi discoveries, Bluetooth discoveries, and weather updates all nudge persistent preference scores.
+- Preferences can change over time. When a new favorite beats an old favorite, the buddy writes a small memory like “I used to favor summer, but now winter is winning.”
+- The memory bank keeps five rotating onboard memory notes in ESP32 preferences. `remember <note>` and `memory add <note>` both store a memory.
+- Auto mode occasionally speaks from the preference/memory system instead of only the current mood, so his personality drifts with repeated events.
+- `preference seed` appends 200 preference/memory phrases per personality to the SD phrase bank as `all` mood rows.
 - Default eye colors follow the time of day: early AM yellow/white, morning light blue/yellow, daytime mood-driven colors, evening/night dark blue/black.
 - A fixed `eye color <name>` or `pupil color <name>` overrides the default time-of-day color until set back to `default`.
-- System menus include the SD phrase bank and placeholders for XIAO, AI model, and Wi-Fi bridge setup.
-- The AI menu includes the buddy name, wake-name training, text scroll speed, and online status.
-- Text scroll speed can also be changed over serial with `scroll speed fast`, `scroll speed normal`, `scroll speed slow`, or a millisecond value from `50` to `600`.
+- Text scroll speed can be changed in the AI menu or over serial with `scroll speed fast`, `scroll speed normal`, `scroll speed slow`, or a millisecond value from `50` to `600`.
 
-## Next Steps
+## SD Phrase Bank
 
-- Expand the phrase bank to 50+ phrases per mood.
-- Add an on-screen phrase editor/keyboard.
-- Add the XIAO ESP32S3 Sense as a camera/mic sensor node.
-- Bridge sensor events and local Gemma output into the CYD over serial, Wi-Fi, BLE, or a local host bridge.
+`phrase seed` appends generated phrases for every mood, including stoner/drunk/hippy, to `/cydbuddy/phrases.csv` on the CYD SD card. It does not reformat the SD card or touch other directories. Boot only creates the CSV header if the file is missing; bulk phrase generation is intentionally manual so startup stays responsive.
 
-## XIAO S3 Sense Bridge
-
-- Firmware: `XIAO-S3-Sense-Bridge`
-- Board: Seeed Studio XIAO ESP32S3 Sense
-- Current role: USB serial sensor node for camera/mic events.
-
-```powershell
-cd "XIAO-S3-Sense-Bridge"
-$env:PLATFORMIO_CORE_DIR='..\CYD-Buddy-Eyes\.pio-core'
-python -m platformio run
-python -m platformio run -t upload --upload-port COM7
-```
-
-If the ESP32-S3 compiler fails on Windows with `CreateProcess: No such file or directory`, build from a short temp path:
-
-```powershell
-$proj="$env:TEMP\xiao"
-$core="$env:TEMP\piocorex"
-Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $proj | Out-Null
-Copy-Item -Path ".\XIAO-S3-Sense-Bridge\*" -Destination $proj -Recurse -Force
-cd $proj
-$env:PLATFORMIO_CORE_DIR=$core
-python -m platformio run -j 1
-python -m platformio run -t upload --upload-port COM7 -j 1
-```
-
-Serial commands:
+Add a phrase manually over serial:
 
 ```text
-status
-init
-capture
-snapshot 3000
-voice on
-voice off
-wake name Buddy
-wake train Buddy
-stream on
-stream off
-threshold 900
-help
+phrase add happy I am suspiciously cheerful today.
 ```
 
-The bridge prints `BUDDY event ...` lines that can be relayed into the CYD firmware. The current Arduino wake-name feature records a lightweight mic-level signature of the spoken name; it is a temporary wake trigger, not real speech-to-text.
-
-For the portable voice target, the XIAO mic must run local speech recognition. The planned path is a separate ESP-IDF/ESP-SR firmware using WakeNet for wake-word detection and MultiNet for offline command phrases. See [Portable Voice Architecture](docs/portable_voice_architecture.md).
-
-## XIAO Portable Voice Target
-
-- Firmware: `XIAO-S3-Sense-Voice-ESP-IDF`
-- Framework: ESP-IDF with ESP-SR
-- Current role: starter target for battery-only wake word and offline command phrases.
-
-This target is intentionally separate from the Arduino bridge so the current camera/mic sensor firmware stays usable while portable voice is brought up.
-
-The offline command vocabulary starts in:
+Expand the generated bank:
 
 ```text
-XIAO-S3-Sense-Voice-ESP-IDF/commands_en.txt
+phrase expand
 ```
 
-The first event format is serial text:
+`phrase expand` appends 100 additional generated phrases per mood for every personality. `phrase seed` appends the full generated set: 150 phrases per mood for every personality.
+
+Generated phrase rows are tagged by personality in the CSV `source` column, such as `seed-sassy` or `seed-nerdy`. Custom `user` phrases are shared across personalities.
+
+Fast phrase mode is the default to reduce animation lag. It uses the same mood/personality generator directly from firmware instead of scanning the large SD CSV every time the buddy speaks. Use `phrase sd on` only when you specifically want the buddy to sample custom SD phrases; use `phrase fast` or `phrase sd off` to return to smoother generated speech.
+
+## Personalities
+
+The current personality changes how generated mood phrases sound and which generated SD-card rows are preferred.
+
+- `sassy`: the default smart-mouth buddy style.
+- `sweet`: warmer and more supportive.
+- `rude`: sharper, crankier, and more insulting.
+- `nerdy`: diagnostic, analytical, and system-log flavored.
+- `chill`: calmer and more relaxed.
+- `chaotic`: louder, weirder, and more dramatic.
+
+Change it from the AI/Ollama menu or over serial:
 
 ```text
-event voice:wake
-event voice:cmd take_picture id=1 prob=0.95
+personality chaotic
+personality next
 ```
 
-Build helper:
+## Online AI Path
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\setup_xiao_voice_idf.ps1 -Port COM7
-```
-
-This requires an ESP-IDF shell with ESP-SR/ESP-Skainet dependencies available. The helper currently reports that ESP-IDF is not active in this Windows shell.
-
-## Dev Relay With Ollama
-
-Run this on the Windows host while both boards are plugged in. This is a development bridge, not the final portable voice path:
-
-```powershell
-python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest
-```
-
-The relay:
-
-- initializes the XIAO Sense camera/mic bridge
-- sets the XIAO to 3-second snapshot mode with live mic events
-- periodically asks the XIAO for a camera capture
-- forwards `XIAO_CMD ...` lines from CYD to the XIAO so CYD menus can change S3 settings while direct BLE is paused
-- forwards `BUDDY event ...` lines to the CYD as `event ...`
-- asks Ollama for short Gemma responses; set `OLLAMA_URL` or pass `--ollama-url`
-- sends Gemma text to the CYD as `say ...`
-- can use Windows speech recognition for temporary spoken-prompt testing
-- can use Windows/SAPI text-to-speech for temporary reply testing
-
-Dev speech-to-text currently uses the Windows default microphone through the relay. That is useful for testing Ollama conversations, but it is not the portable target. Wake-triggered listening is enabled by default:
-
-```powershell
-python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest --stt windows
-```
-
-For testing without the wake trigger, keep the microphone listening in short repeated windows:
-
-```powershell
-python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest --stt windows --stt-always
-```
-
-Text-to-speech is optional and off by default. To speak replies through Windows audio:
-
-```powershell
-python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest --stt windows --tts windows
-```
-
-When a physical speaker is added to the buddy hardware, online TTS can be routed to that output path. For fully offline portable speech, prefer pre-rendered phrase audio on SD card or a dedicated audio/TTS module.
-
-For testing without the CYD:
-
-```powershell
-python tools\cyd_sense_ollama_relay.py --no-cyd --duration 30
-```
-
-For NukeBox Ollama, pass the NukeBox Ollama URL at runtime:
-
-```powershell
-$env:OLLAMA_URL='http://<nukebox-tailscale-ip>:11434'
-python tools\cyd_sense_ollama_relay.py --xiao-port COM7 --cyd-port COM8 --model gemma4:latest
-```
-
-## AI Split
-
-The current working split is:
-
-- XIAO ESP32S3 Sense: eyes and ears, camera captures, mic levels, fast sensor events; future ESP-SR wake word and command recognition.
-- CYD Buddy: face, moods, touch personality, phrase display, persistent tiny memory counters.
-- NukeBox Ollama/Gemma: richer speech, chat personality, reasoning, weather/online/tool-backed answers through the PC relay.
-
-Good future onboard model targets:
-
-- XIAO: ESP-SR WakeNet wake word, ESP-SR MultiNet command phrases, clap/loud/quiet classifier, face/person/motion detection, simple visual mood cues.
-- CYD: rule-based mood memory, phrase selection, touch habits, low-cost personality state.
-- Ollama/OpenAI: full conversation, tool use, web/weather/system context, longer memory summaries.
-- Optional ESP32 devboard: useful later as an audio/speaker board, simple UART/BLE/Wi-Fi bridge, or debug middleman; not the main STT board.
-
-The XIAO and CYD are good for wake words, fixed speech commands, tiny classifiers, and reflex behavior. They are not practical targets for full open-ended dictation or a Gemma-style LLM; that stays on NukeBox/Ollama or OpenAI when Wi-Fi is available.
-
-## Portable Offline Mode
-
-When both boards are powered from a power bank, they can work without NukeBox or Wi-Fi:
-
-- XIAO advertises over BLE as `CYD-Sense`.
-- Direct CYD-to-XIAO BLE is currently paused on the CYD because ESP32 BLE client attach was unstable.
-- XIAO initializes its camera/mic automatically on boot, but now defaults to cool snapshot mode instead of continuous event streaming.
-- XIAO sends tiny/reflex events such as:
-  - `event sound:loud level=...`
-  - `event sound:quiet`
-  - `event face`
-  - `event vision:motion`
-  - `event vision:dark`
-  - `event vision:busy`
-- CYD maps those events into moods and phrases locally when events arrive by serial/relay.
-
-The XIAO Sense can get hot if the camera is treated like a live video stream. Use snapshot mode with live mic events by default:
+CYD can save Wi-Fi, weather location, and Ollama host settings, but the ESP32 cannot run a useful local LLM or full speech-to-text model. For real conversation, use an external host that sends short serial/network commands into the CYD:
 
 ```text
-cool
-voice on
-snapshot 3000
-capture
-status
+say <assistant reply>
+event voice:cmd tell_joke
+event message
+stats cpu=80 temp=70
 ```
 
-Use `active` only for short tests; it samples faster and runs hotter.
+The clean split is:
 
-This is the first tiny-AI layer. It is not a full LLM on-device; it is an offline reflex/classifier layer that makes the buddy portable. Rich chat, weather, online info, and longer reasoning still use Ollama/OpenAI when a relay is available.
+- CYD Buddy: face, moods, touch personality, phrase display, Wi-Fi settings, tiny persistent memory counters.
+- External host when available: speech-to-text, LLM/Ollama/OpenAI, weather, online info, and longer memory.
 
-Portable voice target:
+Offline, the CYD remains a self-contained animated buddy with touch-driven personality and SD-backed phrases.
 
-- XIAO mic runs ESP-SR WakeNet for the wake word.
-- XIAO mic runs ESP-SR MultiNet for a fixed command phrase list.
-- XIAO sends recognized command events to CYD.
-- CYD answers from local phrase banks, moods, memory, and camera/mic events.
-- When Wi-Fi/Ollama is reachable, the same command can escalate to richer AI.
+## Weather And Time
 
-Full arbitrary speech-to-text is not expected to run locally on the CYD/XIAO pair. Offline voice should be command recognition; online voice can be full dictation.
+Wi-Fi credentials are saved locally in ESP32 preferences. The password is masked on the CYD screen and is not printed by `wifi status`. If an SSID is saved, the CYD automatically tries to connect on boot.
 
-## CYD Wi-Fi and Online Bridge
+From the CYD screen:
 
-CYD firmware now uses the larger `huge_app.csv` partition so BLE, Wi-Fi, SD, touch, and the face UI can fit together on the 4 MB CYD.
+1. Tap the upper-left corner to open the system menu.
+2. Tap `WiFi setup`.
+3. Tap a network from the scanned list.
+4. Enter the password with the on-screen keyboard.
+5. Tap `SAVE` to store the credentials and connect.
 
-Serial commands for hotspot/Tailscale/Ollama setup:
+Use `MORE` to page through scanned networks, `RESCAN` to refresh the list, or the manual/hidden row to type a hidden SSID.
+
+The serial command `wifi edit` opens the same on-screen editor. The old `wifi setup` command still starts the `CYD-Buddy-Setup` hotspot as a fallback rescue path. Use `wifi scan` to print nearby 2.4 GHz networks and `wifi status` to print the saved SSID, connection state, IP, RSSI, and password length without printing the password.
+
+Set location once:
 
 ```text
-wifi ssid <hotspot-or-router-name>
-wifi pass <password>
+weather loc 44.1000 -70.2148
+```
+
+Then connect and update:
+
+```text
 wifi connect
-wifi status
 time sync
-ollama host <url>
-xiao <command>
-xiao connect
-remember me as <name>
-phrase seed
-name Buddy
-train name
-scroll speed fast
+weather update
 ```
 
-The password is saved locally in ESP32 preferences and is not printed by `wifi status`.
+Weather uses the Open-Meteo forecast API, so no API key is required. Current weather is shown in the small top info line with the synced date/time.
 
-When CYD is on a phone hotspot, home Wi-Fi, or any network that can reach Tailscale/Ollama, the PC relay can use `wifi status`, `ollama host`, and normal `say`/`event` commands to give the buddy accurate time, weather, and richer AI responses. While direct BLE is paused, use the relay to pass XIAO snapshot events into CYD.
+Set clock and calibration without serial:
 
-`phrase seed` appends 50 generated phrases per mood to `/cydbuddy/phrases.csv` on the CYD SD card. It does not reformat the SD card or touch other directories.
+1. Tap the upper-left corner.
+2. Tap `Time/Touch`.
+3. Tap `Set date/time` for the on-screen +/- editor, `Daily schedule` for wake/sleep phase times, or `Touch cal` for the two-point touch calibration.
 
-## Remembered Person
-
-`remember me as <name>` tells CYD to send `remember <name>` to the XIAO Sense. XIAO captures a lightweight visual signature and stores it in its own preferences. When later camera samples look similar, XIAO emits:
+Serial backups:
 
 ```text
-event person:<name>
+date 2026-09-14
+time 14:30
+timezone -5
+dst on
+clock 12
+schedule night 21:30
+lifecycle
+touch cal
+touch reset
 ```
 
-CYD responds by greeting that name. This is a lightweight portable recognition scaffold, not full face-recognition embeddings yet. A later ESP-DL/TFLite or network AI layer can replace the visual signature with real face/audio identity recognition.
-
-## MimiClaw Reference
-
-Local reference file found:
-
-```text
-C:\Users\CAK3D\Downloads\MimiClaw__ESP32-S3_.bin
-```
-
-`esptool image-info` identifies it as an ESP32-S3 image for 16 MB flash, built with ESP-IDF v5.5.2, compile time `Mar 17 2026 04:24:31`, size `16,711,680` bytes. Treat it as a reference artifact only for now; it is too large/mismatched for the 8 MB XIAO Sense flash target.
+Dead-time tracking is best-effort until the CYD has a trusted clock. After Wi-Fi time sync or manual date/time entry, it persists the current Unix timestamp while powered on. On the next boot, it counts that power cycle as a death and can calculate the missing off-time once real time is known again.
