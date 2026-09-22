@@ -302,6 +302,9 @@ void settleDeadTimeFromClock(bool force = false);
 void saveBuddyMemory(bool force = false);
 void refreshCalendarFromUnixEstimate(bool force = false);
 void updateSpac3Ghost();
+String monthName(int month);
+String calendarContextLine();
+bool syncTimeFromSpac3();
 
 String lastEvent = "idle";
 String statusLine = "tap mood, hold rotate";
@@ -428,6 +431,80 @@ int currentMonth() {
 
 int currentDay() {
   return dateDay;
+}
+
+bool isLeapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+int daysInMonth(int year, int month) {
+  static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  month = constrain(month, 1, 12);
+  if (month == 2 && isLeapYear(year)) return 29;
+  return days[month - 1];
+}
+
+int dayOfWeek(int year, int month, int day) {
+  if (month < 3) {
+    month += 12;
+    year--;
+  }
+  int k = year % 100;
+  int j = year / 100;
+  int h = (day + (13 * (month + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
+  return (h + 6) % 7; // Sunday = 0
+}
+
+int nthWeekdayOfMonth(int year, int month, int weekday, int nth) {
+  int first = dayOfWeek(year, month, 1);
+  int day = 1 + ((weekday - first + 7) % 7) + (nth - 1) * 7;
+  return day <= daysInMonth(year, month) ? day : -1;
+}
+
+int lastWeekdayOfMonth(int year, int month, int weekday) {
+  int last = daysInMonth(year, month);
+  int lastDow = dayOfWeek(year, month, last);
+  return last - ((lastDow - weekday + 7) % 7);
+}
+
+int currentSeasonIndexForMonth(int month, float lat, bool hasLocation) {
+  int m = constrain(month, 1, 12);
+  bool southern = hasLocation && lat < -0.1f;
+  int season = 0;
+  if (m == 12 || m <= 2) season = southern ? 1 : 3;
+  else if (m >= 3 && m <= 5) season = southern ? 2 : 0;
+  else if (m >= 6 && m <= 8) season = southern ? 3 : 1;
+  else season = southern ? 0 : 2;
+  return season;
+}
+
+String holidayName(int year, int month, int day) {
+  if (month == 1 && day == 1) return "New Year's Day";
+  if (month == 1 && day == nthWeekdayOfMonth(year, 1, 1, 3)) return "Martin Luther King Jr. Day";
+  if (month == 2 && day == 14) return "Valentine's Day";
+  if (month == 2 && day == nthWeekdayOfMonth(year, 2, 1, 3)) return "Presidents Day";
+  if (month == 3 && day == 17) return "St. Patrick's Day";
+  if (month == 5 && day == lastWeekdayOfMonth(year, 5, 1)) return "Memorial Day";
+  if (month == 6 && day == 19) return "Juneteenth";
+  if (month == 7 && day == 4) return "Independence Day";
+  if (month == 9 && day == nthWeekdayOfMonth(year, 9, 1, 1)) return "Labor Day";
+  if (month == 10 && day == 31) return "Halloween";
+  if (month == 11 && day == 11) return "Veterans Day";
+  if (month == 11 && day == nthWeekdayOfMonth(year, 11, 4, 4)) return "Thanksgiving";
+  if (month == 12 && day == 24) return "Christmas Eve";
+  if (month == 12 && day == 25) return "Christmas Day";
+  if (month == 12 && day == 31) return "New Year's Eve";
+  return "";
+}
+
+String calendarContextLine() {
+  int season = currentSeasonIndexForMonth(dateMonth, weatherLat, weatherConfigured);
+  String line = monthName(dateMonth) + " " + String(dateDay) + ", " + String(dateYear);
+  line += " is " + String(seasonNames[season]);
+  String holiday = holidayName(dateYear, dateMonth, dateDay);
+  if (holiday.length() > 0) line += " and " + holiday;
+  line += ".";
+  return line;
 }
 
 bool setClockFromText(String value) {
@@ -581,6 +658,7 @@ void setClockFromUnix(uint64_t utcUnix) {
   unixBase = utcUnix;
   unixBaseMs = millis();
   refreshCalendarFromUnixEstimate(true);
+  saveTimeSettings();
   settleDeadTimeFromClock(true);
 }
 
@@ -895,14 +973,7 @@ String monthName(int month) {
 }
 
 int currentSeasonIndex() {
-  int m = constrain(dateMonth, 1, 12);
-  bool southern = weatherConfigured && weatherLat < -0.1f;
-  int season = 0;
-  if (m == 12 || m <= 2) season = southern ? 1 : 3;
-  else if (m >= 3 && m <= 5) season = southern ? 2 : 0;
-  else if (m >= 6 && m <= 8) season = southern ? 3 : 1;
-  else season = southern ? 0 : 2;
-  return season;
+  return currentSeasonIndexForMonth(dateMonth, weatherLat, weatherConfigured);
 }
 
 int currentTimePreferenceIndex() {
@@ -1026,7 +1097,8 @@ String preferenceSummaryLine() {
   int bestMonth = bestPreferenceIndex(monthAffinity, MONTH_COUNT);
   int bestTime = bestPreferenceIndex(timeAffinity, TIME_PREF_COUNT);
   int bestActivity = bestPreferenceIndex(activityAffinity, ACTIVITY_COUNT);
-  return "I " + preferenceIntensity(seasonAffinity[bestSeason]) + " " + seasonNames[bestSeason] +
+  return "Right now it is " + String(seasonNames[currentSeasonIndex()]) + " on " + monthName(dateMonth) + " " + String(dateDay) +
+         ". I " + preferenceIntensity(seasonAffinity[bestSeason]) + " " + seasonNames[bestSeason] +
          ", " + monthName(bestMonth + 1) + ", " + timePreferenceNames[bestTime] +
          ", and " + activityNames[bestActivity] + ".";
 }
@@ -2022,6 +2094,8 @@ String buddyStatsJson() {
   body += "\"learning\":{";
   body += "\"preference_learns\":" + String(preferenceLearnCount) + ",";
   body += "\"memory_revisions\":" + String(memoryRevisionCount) + ",";
+  body += "\"calendar\":\"" + jsonEscape(calendarContextLine()) + "\",";
+  body += "\"holiday\":\"" + jsonEscape(holidayName(dateYear, dateMonth, dateDay)) + "\",";
   body += "\"current_season\":\"" + jsonEscape(seasonNames[currentSeasonIndex()]) + "\",";
   body += "\"favorite_season\":\"" + jsonEscape(seasonNames[bestSeason]) + "\",";
   body += "\"favorite_season_score\":" + String(seasonAffinity[bestSeason]) + ",";
@@ -2246,8 +2320,35 @@ void connectWifi() {
   speechScroll = 0;
 }
 
+bool syncTimeFromSpac3() {
+  if (WiFi.status() != WL_CONNECTED || spac3Host.length() == 0) return false;
+  HTTPClient http;
+  String url = spac3Host + "/api/cyd/telemetry";
+  http.setTimeout(4500);
+  if (!http.begin(url)) return false;
+  int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    http.end();
+    return false;
+  }
+  String body = http.getString();
+  http.end();
+  int telemetryUnix = jsonInt(body, "time", -1);
+  if (telemetryUnix <= 1700000000) return false;
+  setClockFromUnix((uint64_t)telemetryUnix);
+  statusLine = "spac3 time";
+  speechLine = "Clock synced from Spac3. " + calendarContextLine();
+  speechScroll = 0;
+  return true;
+}
+
 void syncNetworkTime() {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    statusLine = "time wifi off";
+    speechLine = "I need WiFi before I can fix my clock.";
+    speechScroll = 0;
+    return;
+  }
   configTime(timezoneOffsetMinutes * 60, daylightSavings ? 3600 : 0, "pool.ntp.org", "time.nist.gov");
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 2500)) {
@@ -2261,7 +2362,14 @@ void syncNetworkTime() {
     saveTimeSettings();
     refreshCalendarFromUnixEstimate(true);
     settleDeadTimeFromClock(true);
+    speechLine = "Clock synced. " + calendarContextLine();
+    speechScroll = 0;
+    return;
   }
+  if (syncTimeFromSpac3()) return;
+  statusLine = "time sync failed";
+  speechLine = "Time sync failed. NTP and Spac3 time both ducked me.";
+  speechScroll = 0;
 }
 
 void updateWifi() {
@@ -2552,14 +2660,29 @@ String generatedMoodPhrase(const char* mood, int index, Personality personality)
 }
 
 String generatedPreferencePhrase(int index, Personality personality) {
-  const char* subjects[] = {
-    "spring", "summer", "fall", "winter", "January", "February", "March", "April",
-    "May", "June", "July", "August", "September", "October", "November", "December",
-    "early AM", "morning", "daytime", "late afternoon", "night", "late night",
+  int bestSeason = bestPreferenceIndex(seasonAffinity, SEASON_COUNT);
+  int bestMonth = bestPreferenceIndex(monthAffinity, MONTH_COUNT);
+  int bestTime = bestPreferenceIndex(timeAffinity, TIME_PREF_COUNT);
+  int bestActivity = bestPreferenceIndex(activityAffinity, ACTIVITY_COUNT);
+  String currentSeason = String(seasonNames[currentSeasonIndex()]);
+  String currentMonth = monthName(dateMonth);
+  String favoriteSeason = String(seasonNames[bestSeason]);
+  String favoriteMonth = monthName(bestMonth + 1);
+  String holiday = holidayName(dateYear, dateMonth, dateDay);
+  String subjects[] = {
+    "current season " + currentSeason,
+    "current month " + currentMonth,
+    "today, " + currentMonth + " " + String(dateDay),
+    "this time block, " + String(timePreferenceNames[currentTimePreferenceIndex()]),
+    "favorite season " + favoriteSeason,
+    "favorite month " + favoriteMonth,
+    "favorite time " + String(timePreferenceNames[bestTime]),
+    "favorite activity " + String(activityNames[bestActivity]),
     "boops", "pets", "tickles", "eye pokes", "swipes", "feeding", "playing",
     "wifi hunting", "bluetooth spotting", "weather watching", "clear skies", "rain",
     "snow", "storms", "quiet rooms", "busy rooms", "new places", "old routines"
   };
+  if (holiday.length() > 0 && (index % 4) == 0) subjects[2] = "today, " + holiday;
   const char* changes[] = {
     "used to be my whole thing, but I am reconsidering",
     "is climbing my private rankings",
@@ -4462,6 +4585,14 @@ void handleSerialLine(String line) {
                   buddyStrength, buddyArmor, dailyFeedCount, dailyPlayCount,
                   dailyHealthGainTenth / 10, abs(dailyHealthGainTenth % 10),
                   missedFeedings, lastCareDay, unixWeekNumber(currentUnixEstimate()));
+  } else if (lower == "calendar" || lower == "date status" || lower == "time status") {
+    String holiday = holidayName(dateYear, dateMonth, dateDay);
+    Serial.printf("calendar date=%04d-%02d-%02d minute=%d tz=%s dst=%s season=%s holiday=%s unix=%lu context=\"%s\"\n",
+                  dateYear, dateMonth, dateDay, minuteOfDay(), timezoneLabel().c_str(), daylightSavings ? "on" : "off",
+                  seasonNames[currentSeasonIndex()], holiday.length() ? holiday.c_str() : "none",
+                  (unsigned long)min(currentUnixEstimate(), (uint64_t)4294967295ULL), calendarContextLine().c_str());
+    speechLine = calendarContextLine();
+    speechScroll = 0;
   } else if (lower == "preferences" || lower == "prefs" || lower == "memory bank") {
     int s = bestPreferenceIndex(seasonAffinity, SEASON_COUNT);
     int mo = bestPreferenceIndex(monthAffinity, MONTH_COUNT);
@@ -4520,7 +4651,12 @@ void handleSerialLine(String line) {
   } else if (lower.startsWith("time ")) {
     String value = lower.substring(5);
     value.trim();
-    if (value == "24") {
+    if (value == "sync") {
+      syncNetworkTime();
+      Serial.printf("time_sync minute=%d date=%04d-%02d-%02d season=%s wifi=%s\n",
+                    minuteOfDay(), dateYear, dateMonth, dateDay, seasonNames[currentSeasonIndex()],
+                    WiFi.status() == WL_CONNECTED ? "connected" : "offline");
+    } else if (value == "24") {
       clock24Hour = true;
       saveTimeSettings();
       Serial.println("clock=24");
@@ -5373,7 +5509,7 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, feed, play, boost, calm, care reset, health, preferences, memory add <note>, memory think, preference seed, prefer season summer, prefer month october, prefer time night, prefer activity playing, dislike season winter, bt seen <name>, date YYYY-MM-DD, time HH:MM, timezone -5, dst on|off, clock 12|24, schedule <early|morning|day|latepm|night|latenight> HH:MM, lifecycle, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, personality <name|next>, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi setup, wifi ssid <name>, wifi pass <password>, wifi connect, wifi scan, wifi status, weather loc <lat> <lon>, weather update, weather status, ollama host <url>, spac3 host <url>, spac3 update, spac3 status, spac3 on|off, remember me as <name>, phrase add <mood> <phrase>, phrase expand");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, feed, play, boost, calm, care reset, health, calendar, preferences, memory add <note>, memory think, preference seed, prefer season summer, prefer month october, prefer time night, prefer activity playing, dislike season winter, bt seen <name>, date YYYY-MM-DD, time HH:MM, timezone -5, dst on|off, clock 12|24, schedule <early|morning|day|latepm|night|latenight> HH:MM, lifecycle, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, personality <name|next>, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi setup, wifi ssid <name>, wifi pass <password>, wifi connect, wifi scan, wifi status, weather loc <lat> <lon>, weather update, weather status, ollama host <url>, spac3 host <url>, spac3 update, spac3 status, spac3 on|off, remember me as <name>, phrase add <mood> <phrase>, phrase expand");
   if (wifiConfigured) connectWifi();
 }
 
