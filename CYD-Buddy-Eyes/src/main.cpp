@@ -218,6 +218,7 @@ String spac3LastMood = "";
 String spac3LastFace = "";
 String spac3LastMessage = "";
 String spac3LastHost = "";
+String spac3LastEventKind = "";
 int spac3LastAlert = 0;
 int spac3LastWifiCount = 0;
 float spac3LastCpuC = NAN;
@@ -2070,7 +2071,7 @@ void applySpac3Telemetry(const String& body) {
   String mood = jsonStringAfter(body, "\"dock_label\"", "mood", "curious");
   String face = jsonStringAfter(body, "\"dock_label\"", "face", "");
   String message = jsonStringAfter(body, "\"dock_label\"", "message", "");
-  if (message.length() == 0) message = jsonStringAfter(body, "\"dock_label\"", "thought", "");
+  String eventKind = jsonStringAfter(body, "\"buddy_event\"", "kind", "");
   String host = jsonStringValue(body, "host", "hack-safe");
   String alertLevel = jsonStringAfter(body, "\"alert\"", "level", "GREEN");
   float cpuC = jsonNumber(body, "cpu_temp_c", NAN);
@@ -2079,12 +2080,14 @@ void applySpac3Telemetry(const String& body) {
   int alertScore = jsonInt(body, "score", 0);
   int nextPoll = jsonInt(body, "next_poll_ms", 2500);
   int telemetryUnix = jsonInt(body, "time", -1);
+  int previousAlert = spac3LastAlert;
 
   spac3TelemetryOk = true;
   spac3LastMood = mood;
   spac3LastFace = face;
   spac3LastMessage = message;
   spac3LastHost = host;
+  spac3LastEventKind = eventKind;
   spac3LastAlert = alertScore;
   spac3LastWifiCount = wifiCount;
   spac3LastCpuC = cpuC;
@@ -2097,14 +2100,16 @@ void applySpac3Telemetry(const String& body) {
   bool recentlyTouched = userHasInteracted && now - lastInteractionMs < 15UL * 60UL * 1000UL;
   bool shouldWake = spac3TelemetryShouldWake(mood, message, cpuC, alertScore);
   bool passive = spac3TelemetryIsPassive(mood, message, cpuC, alertScore);
+  bool hasEvent = message.length() > 0 || eventKind.length() > 0 ||
+                  (alertScore >= 35 && alertScore > previousAlert + 5);
   if (restHours && passive && !recentlyTouched && !shouldWake) {
     currentMood = MOOD_SLEEPY;
     asleep = timeIsLateNight();
     lastEvent = "spac3 quiet " + mood;
     statusLine = timeIsEarlyAM() ? "spac3 waking slow" : "spac3 quiet sleep";
     nextSpac3PollMs = max(nextSpac3PollMs, 10000UL);
-    if (now - lastSpac3QuietMs > 60000UL || speechLine.length() == 0) {
-      speechLine = timeIsEarlyAM() ? "Spac3 is quiet. I am barely waking up." : "Spac3 is quiet. I am sleeping.";
+    if (hasEvent && (now - lastSpac3QuietMs > 60000UL || speechLine.length() == 0)) {
+      speechLine = message.length() ? message : (timeIsEarlyAM() ? "Spac3 stirred. I am barely waking up." : "Spac3 stirred. I am watching from sleep mode.");
       speechScroll = 0;
       lastSpac3QuietMs = now;
     }
@@ -2112,20 +2117,25 @@ void applySpac3Telemetry(const String& body) {
   }
 
   currentMood = moodFromSpac3(mood, cpuC, alertScore);
-  if (shouldWake) asleep = false;
+  if (shouldWake || hasEvent) asleep = false;
   lastEvent = "spac3 " + mood;
   statusLine = "spac3 " + alertLevel + " " + mood;
   lastMoodAuto = now;
-  manualMoodHoldUntil = now + (shouldWake ? 12000UL : 3000UL);
-  if (message.length() > 0) {
+  manualMoodHoldUntil = now + ((shouldWake || hasEvent) ? 12000UL : 2500UL);
+  if (message.length() > 0 && hasEvent) {
     speechLine = message;
-  } else if (!isnan(cpuC)) {
-    speechLine = "Spac3-Gh0st: " + host + " CPU " + String(cpuC, 1) + "C.";
-  } else {
-    speechLine = "Spac3-Gh0st telemetry linked.";
+    if (speechLine.length() > 180) speechLine = speechLine.substring(0, 180);
+    speechScroll = 0;
+  } else if (hasEvent) {
+    if (eventKind == "wifi_new") speechLine = "New network in the area. I logged the signal.";
+    else if (eventKind == "bluetooth_new") speechLine = "New Bluetooth name nearby. Armor up.";
+    else if (eventKind == "lan_new") speechLine = "New local device showed up on the dock.";
+    else if (eventKind == "mesh_new") speechLine = "New mesh node heard. The long-range whisper net is waking up.";
+    else if (eventKind == "mesh_message") speechLine = "Mesh message received. The radio net spoke.";
+    else if (eventKind == "alert") speechLine = "Spac3-Gh0st alert changed. I am watching.";
+    else speechLine = "Spac3-Gh0st event noticed.";
+    speechScroll = 0;
   }
-  if (speechLine.length() > 180) speechLine = speechLine.substring(0, 180);
-  speechScroll = 0;
 
   if (!isnan(cpuC) && cpuC >= 65.0f) {
     buddyAnxiety = constrain(buddyAnxiety + 1, 0, 100);
