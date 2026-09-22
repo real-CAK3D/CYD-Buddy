@@ -261,6 +261,8 @@ When Wi-Fi is connected and Spac3 telemetry is enabled, CYD polls `/api/cyd/tele
 
 Passive late-night telemetry, such as low room light, normal watch, GPS no-fix notes, and quiet weather updates, is stored for status but does not keep Buddy awake. Urgent alerts, hot CPU, camera/audio/motion/device/security events, or direct touch/serial wake events can still wake him.
 
+Buddy's heartbeat also sends a richer pet/AI state packet for the Spac3-Gh0st dock: care stats, interaction counters, learned preferences, memory snippets, current speech/personality, lifecycle/dead-timer data, and a tiny local AI summary. The Spac3 dock should only show that expanded state while CYD Buddy is connected and heartbeating.
+
 Useful serial commands:
 
 ```text

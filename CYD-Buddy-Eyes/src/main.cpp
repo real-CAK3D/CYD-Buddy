@@ -213,6 +213,7 @@ unsigned long lastSpac3PollMs = 0;
 unsigned long nextSpac3PollMs = 3500;
 unsigned long lastSpac3HeartbeatMs = 0;
 unsigned long lastSpac3QuietMs = 0;
+unsigned long lastSpac3LearningMs = 0;
 String spac3LastMood = "";
 String spac3LastFace = "";
 String spac3LastMessage = "";
@@ -1027,6 +1028,26 @@ String preferenceSummaryLine() {
   return "I " + preferenceIntensity(seasonAffinity[bestSeason]) + " " + seasonNames[bestSeason] +
          ", " + monthName(bestMonth + 1) + ", " + timePreferenceNames[bestTime] +
          ", and " + activityNames[bestActivity] + ".";
+}
+
+String buddyDailySummaryLine() {
+  String summary = "Today I am " + String(moodNames[currentMood]) + ", health " + healthLabel();
+  summary += ", hunger " + String(buddyHunger) + ", play " + String(buddyPlayNeed);
+  summary += ", strength " + String(buddyStrength) + ", armor " + String(buddyArmor) + ".";
+  if (buddyNewNetworkCount > 0 || buddyNewBluetoothCount > 0) {
+    summary += " I logged " + String(buddyNewNetworkCount) + " WiFi and " + String(buddyNewBluetoothCount) + " Bluetooth names.";
+  }
+  return summary;
+}
+
+String buddyAiInsightLine() {
+  int learned = (int)min((unsigned long)100, preferenceLearnCount / 4);
+  String insight = "Tiny AI: ";
+  if (learned >= 75) insight += "strong opinions forming. ";
+  else if (learned >= 35) insight += "patterns are starting to stick. ";
+  else insight += "still learning the room. ";
+  insight += preferenceSummaryLine();
+  return insight;
 }
 
 String randomMemoryLine() {
@@ -1948,6 +1969,103 @@ String jsonEscape(String value) {
   return value;
 }
 
+String buddyMemoryJsonArray() {
+  String out = "[";
+  bool first = true;
+  for (int i = 0; i < MEMORY_BANK_COUNT; i++) {
+    if (buddyMemoryBank[i].length() == 0) continue;
+    if (!first) out += ",";
+    out += "\"" + jsonEscape(buddyMemoryBank[i]) + "\"";
+    first = false;
+  }
+  out += "]";
+  return out;
+}
+
+String buddyStatsJson() {
+  uint64_t sessionSeconds = (millis() - lifecycleBootMs) / 1000ULL;
+  uint64_t aliveSeconds = totalAliveSeconds + sessionSeconds;
+  int bestSeason = bestPreferenceIndex(seasonAffinity, SEASON_COUNT);
+  int bestMonth = bestPreferenceIndex(monthAffinity, MONTH_COUNT);
+  int bestTime = bestPreferenceIndex(timeAffinity, TIME_PREF_COUNT);
+  int bestActivity = bestPreferenceIndex(activityAffinity, ACTIVITY_COUNT);
+  int confidence = constrain((int)(preferenceLearnCount / 4), 0, 100);
+
+  String body = "";
+  body += "\"stats\":{";
+  body += "\"health\":\"" + jsonEscape(healthLabel()) + "\",";
+  body += "\"health_tenth\":" + String(buddyHealthTenth) + ",";
+  body += "\"hunger\":" + String(buddyHunger) + ",";
+  body += "\"play_need\":" + String(buddyPlayNeed) + ",";
+  body += "\"restless\":" + String(buddyRestless) + ",";
+  body += "\"anxious\":" + String(buddyAnxiety) + ",";
+  body += "\"strength\":" + String(buddyStrength) + ",";
+  body += "\"armor\":" + String(buddyArmor) + ",";
+  body += "\"feeds_today\":" + String(dailyFeedCount) + ",";
+  body += "\"plays_today\":" + String(dailyPlayCount) + ",";
+  body += "\"daily_gain_tenth\":" + String(dailyHealthGainTenth) + ",";
+  body += "\"missed_feeds\":" + String(missedFeedings);
+  body += "},";
+  body += "\"interactions\":{";
+  body += "\"touches\":" + String(buddyTouchCount) + ",";
+  body += "\"eye_pokes\":" + String(buddyEyePokeCount) + ",";
+  body += "\"tickles\":" + String(buddyTickleCount) + ",";
+  body += "\"bored\":" + String(buddyBoredCount) + ",";
+  body += "\"swipe_left\":" + String(buddySwipeLeftCount) + ",";
+  body += "\"swipe_right\":" + String(buddySwipeRightCount) + ",";
+  body += "\"swipe_up\":" + String(buddySwipeUpCount) + ",";
+  body += "\"swipe_down\":" + String(buddySwipeDownCount) + ",";
+  body += "\"new_wifi\":" + String(buddyNewNetworkCount) + ",";
+  body += "\"new_bluetooth\":" + String(buddyNewBluetoothCount);
+  body += "},";
+  body += "\"learning\":{";
+  body += "\"preference_learns\":" + String(preferenceLearnCount) + ",";
+  body += "\"memory_revisions\":" + String(memoryRevisionCount) + ",";
+  body += "\"current_season\":\"" + jsonEscape(seasonNames[currentSeasonIndex()]) + "\",";
+  body += "\"favorite_season\":\"" + jsonEscape(seasonNames[bestSeason]) + "\",";
+  body += "\"favorite_season_score\":" + String(seasonAffinity[bestSeason]) + ",";
+  body += "\"favorite_month\":\"" + jsonEscape(monthName(bestMonth + 1)) + "\",";
+  body += "\"favorite_month_score\":" + String(monthAffinity[bestMonth]) + ",";
+  body += "\"favorite_time\":\"" + jsonEscape(timePreferenceNames[bestTime]) + "\",";
+  body += "\"favorite_time_score\":" + String(timeAffinity[bestTime]) + ",";
+  body += "\"favorite_activity\":\"" + jsonEscape(activityNames[bestActivity]) + "\",";
+  body += "\"favorite_activity_score\":" + String(activityAffinity[bestActivity]) + ",";
+  body += "\"summary\":\"" + jsonEscape(preferenceSummaryLine()) + "\"";
+  body += "},";
+  body += "\"memory\":{";
+  body += "\"bank\":" + buddyMemoryJsonArray() + ",";
+  body += "\"random\":\"" + jsonEscape(randomMemoryLine()) + "\"";
+  body += "},";
+  body += "\"phrases\":{";
+  body += "\"current\":\"" + jsonEscape(speechLine) + "\",";
+  body += "\"status\":\"" + jsonEscape(statusLine) + "\",";
+  body += "\"personality\":\"" + jsonEscape(personalityNames[currentPersonality]) + "\",";
+  body += "\"scroll_ms\":" + String(speechScrollMs) + ",";
+  body += "\"sd_lookup\":" + String(sdPhraseLookupEnabled ? "true" : "false") + ",";
+  body += "\"phrase_file\":\"" + jsonEscape(PHRASE_FILE) + "\"";
+  body += "},";
+  body += "\"lifecycle\":{";
+  body += "\"boots\":" + String(bootCount) + ",";
+  body += "\"deaths\":" + String(deathCount) + ",";
+  body += "\"alive_s\":" + String((unsigned long)min(aliveSeconds, (uint64_t)4294967295ULL)) + ",";
+  body += "\"session_s\":" + String((unsigned long)min(sessionSeconds, (uint64_t)4294967295ULL)) + ",";
+  body += "\"dead_s\":" + String((unsigned long)min(totalDeadSeconds, (uint64_t)4294967295ULL)) + ",";
+  body += "\"alive\":\"" + jsonEscape(formatDuration(aliveSeconds)) + "\",";
+  body += "\"session\":\"" + jsonEscape(formatDuration(sessionSeconds)) + "\",";
+  body += "\"dead\":\"" + jsonEscape(formatDuration(totalDeadSeconds)) + "\",";
+  body += "\"last_unix\":" + String((unsigned long)min(lastKnownUnix, (uint64_t)4294967295ULL));
+  body += "},";
+  body += "\"ai_state\":{";
+  body += "\"mode\":\"tiny-local\",";
+  body += "\"confidence\":" + String(confidence) + ",";
+  body += "\"asleep\":" + String(asleep ? "true" : "false") + ",";
+  body += "\"auto_mode\":" + String(autoMode ? "true" : "false") + ",";
+  body += "\"insight\":\"" + jsonEscape(buddyAiInsightLine()) + "\",";
+  body += "\"daily_summary\":\"" + jsonEscape(buddyDailySummaryLine()) + "\"";
+  body += "}";
+  return body;
+}
+
 void applySpac3Telemetry(const String& body) {
   String mood = jsonStringAfter(body, "\"dock_label\"", "mood", "curious");
   String face = jsonStringAfter(body, "\"dock_label\"", "face", "");
@@ -2021,6 +2139,17 @@ void applySpac3Telemetry(const String& body) {
   if (message.indexOf("GPS") >= 0 || message.indexOf("gps") >= 0) {
     rememberBuddyThought("Spac3-Gh0st is thinking about GPS.");
   }
+  if (now - lastSpac3LearningMs > 60000UL) {
+    lastSpac3LearningMs = now;
+    learnCurrentContext(1);
+    if (wifiCount > 0) learnActivityPreference(7, 1);
+    if (message.length() > 0 && random(0, 100) < 25) {
+      rememberBuddyThought("Spac3 noticed: " + message);
+    } else if (alertScore > 0) {
+      rememberBuddyThought("Spac3 alert " + String(alertScore) + " made me watch the dock.");
+    }
+    saveBuddyMemory();
+  }
 }
 
 bool fetchSpac3Telemetry(bool announceFailure = false) {
@@ -2061,7 +2190,8 @@ bool sendSpac3Heartbeat() {
   body += "\"firmware\":\"CYD-Buddy-Eyes\",";
   body += "\"face\":\"" + jsonEscape(spac3LastFace.length() ? spac3LastFace : String("cyd-eyes")) + "\",";
   body += "\"mood\":\"" + jsonEscape(String(moodNames[currentMood])) + "\",";
-  body += "\"message\":\"" + jsonEscape(speechLine) + "\"";
+  body += "\"message\":\"" + jsonEscape(speechLine) + "\",";
+  body += buddyStatsJson();
   body += "}";
   int code = http.POST(body);
   http.end();
