@@ -316,6 +316,10 @@ String lastAutoSpeechLine = "";
 int speechScroll = 0;
 unsigned long lastSpeechScroll = 0;
 unsigned long speechScrollMs = 140;
+bool speechFlashMode = false;
+String speechFlashText = "";
+int speechFlashSegment = 0;
+unsigned long lastSpeechFlashMs = 0;
 String buddyName = "Buddy";
 
 uint16_t bgColor = TFT_BLACK;
@@ -1523,6 +1527,7 @@ void loadVoiceSettings() {
   prefs.begin("voice", true);
   buddyName = prefs.getString("name", "Buddy");
   speechScrollMs = prefs.getULong("scroll", 140);
+  speechFlashMode = prefs.getBool("flash", false);
   int savedPersonality = prefs.getInt("personality", PERSONALITY_SASSY);
   prefs.end();
   speechScrollMs = constrain((int)speechScrollMs, 50, 600);
@@ -1549,6 +1554,19 @@ void saveSpeechScroll(unsigned long ms) {
   prefs.end();
   statusLine = String("scroll ") + speechScrollMs + "ms";
   speechLine = "Text scroll speed updated.";
+  speechScroll = 0;
+}
+
+void saveSpeechDisplayMode(bool flashMode) {
+  speechFlashMode = flashMode;
+  speechFlashText = "";
+  speechFlashSegment = 0;
+  lastSpeechFlashMs = 0;
+  prefs.begin("voice", false);
+  prefs.putBool("flash", speechFlashMode);
+  prefs.end();
+  statusLine = speechFlashMode ? "text flash" : "text scroll";
+  speechLine = speechFlashMode ? "Speech display set to flash chunks." : "Speech display set to scrolling marquee.";
   speechScroll = 0;
 }
 
@@ -4419,7 +4437,7 @@ void handleMenuItem(int item) {
     } else if (item == 1) {
       cyclePersonality();
     } else if (item == 2) {
-      saveSpeechScroll(speechScrollMs <= 80 ? 180 : speechScrollMs <= 180 ? 280 : 80);
+      saveSpeechDisplayMode(!speechFlashMode);
     } else if (item == 3) {
       openMenu(MENU_SYSTEM_PHRASES);
     }
@@ -4900,6 +4918,14 @@ void handleSerialLine(String line) {
     else if (speed == "slow") saveSpeechScroll(280);
     else saveSpeechScroll((unsigned long)constrain((int)speed.toInt(), 50, 600));
     Serial.printf("scroll_ms=%lu\n", speechScrollMs);
+  } else if (lower == "speech mode" || lower == "text mode") {
+    Serial.printf("speech_mode=%s scroll_ms=%lu\n", speechFlashMode ? "flash" : "scroll", speechScrollMs);
+  } else if (lower == "speech mode flash" || lower == "text mode flash" || lower == "flash text") {
+    saveSpeechDisplayMode(true);
+    Serial.printf("speech_mode=flash scroll_ms=%lu\n", speechScrollMs);
+  } else if (lower == "speech mode scroll" || lower == "text mode scroll" || lower == "scroll text") {
+    saveSpeechDisplayMode(false);
+    Serial.printf("speech_mode=scroll scroll_ms=%lu\n", speechScrollMs);
   } else if (lower == "personality") {
     Serial.printf("personality=%s\n", personalityNames[currentPersonality]);
     speechLine = "Personality: " + String(personalityNames[currentPersonality]) + ".";
@@ -4924,7 +4950,7 @@ void handleSerialLine(String line) {
     menuMode = MENU_NONE;
     statusLine = "menu closed";
   } else if (lower == "diag" || lower == "diagnostics") {
-    Serial.printf("diag frame=%s size=%dx%d rotation=%d mood=%s mode=%s menu=%d overlays wifi=%s time=%s schedule=%s stats=%s touchcal=%s heap=%u sd=%s phrase_sd=%s wifi=%s ssid_saved=%s weather=%s spac3=%s spac3_ok=%s name=%s personality=%s scroll=%lums health=%s strength=%d armor=%d\n",
+    Serial.printf("diag frame=%s size=%dx%d rotation=%d mood=%s mode=%s menu=%d overlays wifi=%s time=%s schedule=%s stats=%s touchcal=%s heap=%u sd=%s phrase_sd=%s wifi=%s ssid_saved=%s weather=%s spac3=%s spac3_ok=%s name=%s personality=%s speech_mode=%s scroll=%lums health=%s strength=%d armor=%d\n",
                   frameOk ? "ok" : "failed",
                   screenW,
                   screenH,
@@ -4947,6 +4973,7 @@ void handleSerialLine(String line) {
                   spac3TelemetryOk ? "true" : "false",
                   buddyName.c_str(),
                   personalityNames[currentPersonality],
+                  speechFlashMode ? "flash" : "scroll",
                   speechScrollMs,
                   healthLabel().c_str(),
                   buddyStrength,
@@ -5158,7 +5185,47 @@ void drawSpeechStrip() {
 
   int visibleChars = max(10, (screenW - 20) / 6);
   String shown = text;
-  if (text.length() > visibleChars) {
+  if (speechFlashMode) {
+    unsigned long now = millis();
+    unsigned long displayMs = constrain((int)speechScrollMs * 18, 1200, 5200);
+    unsigned long blankMs = min(280UL, displayMs / 5);
+    if (text != speechFlashText) {
+      speechFlashText = text;
+      speechFlashSegment = 0;
+      lastSpeechFlashMs = now;
+    }
+    int start = 0;
+    int segment = 0;
+    shown = "";
+    while (start < text.length()) {
+      while (start < text.length() && text[start] == ' ') start++;
+      int end = min(start + visibleChars, (int)text.length());
+      if (end < text.length()) {
+        int space = text.lastIndexOf(' ', end);
+        if (space > start + visibleChars / 2) end = space;
+      }
+      String part = text.substring(start, end);
+      part.trim();
+      if (part.length() == 0) break;
+      if (segment == speechFlashSegment) {
+        shown = part;
+        break;
+      }
+      start = (end < text.length() && text[end] == ' ') ? end + 1 : end;
+      segment++;
+    }
+    if (shown.length() == 0) {
+      speechFlashSegment = 0;
+      lastSpeechFlashMs = now;
+      shown = text.substring(0, min(visibleChars, (int)text.length()));
+    }
+    if (now - lastSpeechFlashMs > displayMs) {
+      speechFlashSegment++;
+      lastSpeechFlashMs = now;
+    } else if (now - lastSpeechFlashMs > displayMs - blankMs && text.length() > visibleChars) {
+      shown = " ";
+    }
+  } else if (text.length() > visibleChars) {
     String looped = text + "   " + text;
     unsigned long now = millis();
     if (now - lastSpeechScroll > speechScrollMs) {
@@ -5215,7 +5282,7 @@ String menuItemLabel(int i) {
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_AI) {
-    const char* a[] = {"Buddy name", "Personality", "Scroll speed", "Phrases"};
+    const char* a[] = {"Buddy name", "Personality", "Text mode", "Phrases"};
     return a[i];
   }
   if (menuMode == MENU_SYSTEM_WIFI) {
@@ -5598,7 +5665,7 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, feed, play, boost, calm, care reset, health, calendar, preferences, memory add <note>, memory think, preference seed, prefer season summer, prefer month october, prefer time night, prefer activity playing, dislike season winter, bt seen <name>, date YYYY-MM-DD, time HH:MM, timezone -5, dst on|off, clock 12|24, schedule <early|morning|day|latepm|night|latenight> HH:MM, lifecycle, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, personality <name|next>, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi setup, wifi ssid <name>, wifi pass <password>, wifi connect, wifi scan, wifi status, weather loc <lat> <lon>, weather update, weather status, ollama host <url>, spac3 host <url>, spac3 update, spac3 status, spac3 on|off, remember me as <name>, phrase add <mood> <phrase>, phrase expand");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, feed, play, boost, calm, care reset, health, calendar, preferences, memory add <note>, memory think, preference seed, prefer season summer, prefer month october, prefer time night, prefer activity playing, dislike season winter, bt seen <name>, date YYYY-MM-DD, time HH:MM, timezone -5, dst on|off, clock 12|24, schedule <early|morning|day|latepm|night|latenight> HH:MM, lifecycle, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, personality <name|next>, speech mode <scroll|flash>, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi setup, wifi ssid <name>, wifi pass <password>, wifi connect, wifi scan, wifi status, weather loc <lat> <lon>, weather update, weather status, ollama host <url>, spac3 host <url>, spac3 update, spac3 status, spac3 on|off, remember me as <name>, phrase add <mood> <phrase>, phrase expand");
   if (wifiConfigured) connectWifi();
 }
 
