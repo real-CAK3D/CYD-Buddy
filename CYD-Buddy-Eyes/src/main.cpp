@@ -733,15 +733,15 @@ void resetDailyCareIfNeeded(uint64_t nowUnix) {
 
   int days = min(day - lastCareDay, 365);
   for (int i = 0; i < days; i++) {
-    applyHealthDeltaTenth(-50, "daily health loss");
+    applyHealthDeltaTenth(-10, "daily health drift");
     if (dailyFeedCount == 0) {
       missedFeedings++;
-      applyHealthDeltaTenth(-5, "missed feeding");
-      buddyHunger = constrain(buddyHunger + 12, 0, 100);
-      buddyAnxiety = constrain(buddyAnxiety + 3, 0, 100);
+      applyHealthDeltaTenth(-2, "missed feeding");
+      buddyHunger = constrain(buddyHunger + 4, 0, 100);
+      buddyAnxiety = constrain(buddyAnxiety + 1, 0, 100);
     }
-    buddyPlayNeed = constrain(buddyPlayNeed + 10, 0, 100);
-    buddyRestless = constrain(buddyRestless + 8, 0, 100);
+    buddyPlayNeed = constrain(buddyPlayNeed + 3, 0, 100);
+    buddyRestless = constrain(buddyRestless + 2, 0, 100);
     dailyHealthGainTenth = 0;
     dailyFeedCount = 0;
     dailyPlayCount = 0;
@@ -753,10 +753,11 @@ void applyDeadTimePenalty(uint64_t deadSeconds) {
   if (deadSeconds == 0) return;
   uint64_t rawMinutes = deadSeconds / 60ULL;
   int deadMinutes = (int)(rawMinutes > 10000ULL ? 10000ULL : rawMinutes);
-  applyHealthDeltaTenth(-deadMinutes, "dead time hurt");
-  buddyHunger = constrain(buddyHunger + deadMinutes / 6, 0, 100);
-  buddyPlayNeed = constrain(buddyPlayNeed + deadMinutes / 8, 0, 100);
-  buddyAnxiety = constrain(buddyAnxiety + deadMinutes / 20, 0, 100);
+  int penalty = min(120, deadMinutes / 10);
+  applyHealthDeltaTenth(-penalty, "dead time drift");
+  buddyHunger = constrain(buddyHunger + deadMinutes / 45, 0, 100);
+  buddyPlayNeed = constrain(buddyPlayNeed + deadMinutes / 60, 0, 100);
+  buddyAnxiety = constrain(buddyAnxiety + deadMinutes / 180, 0, 100);
 }
 
 void addDailyHealthGain(int amountTenth) {
@@ -1413,12 +1414,15 @@ void weeklyBoostBuddy() {
 
 void calmBuddyCare(bool full = false) {
   if (full) {
-    buddyHealthTenth = max(buddyHealthTenth, 950);
-    buddyHunger = 12;
-    buddyPlayNeed = 18;
-    buddyRestless = 10;
-    buddyAnxiety = 6;
-    dailyHealthGainTenth = min(dailyHealthGainTenth, 60);
+    buddyHealthTenth = 1000;
+    buddyHunger = 0;
+    buddyPlayNeed = 0;
+    buddyRestless = 0;
+    buddyAnxiety = 0;
+    dailyHealthGainTenth = 0;
+    dailyFeedCount = 0;
+    dailyPlayCount = 0;
+    missedFeedings = 0;
   } else {
     buddyHunger = min(buddyHunger, 35);
     buddyPlayNeed = min(buddyPlayNeed, 35);
@@ -3481,16 +3485,16 @@ void updateBuddy() {
     int ticks = (now - lastLifeTickMs) / 60000UL;
     lastLifeTickMs += ticks * 60000UL;
     careDriftRemainder += ticks;
-    int hungerTicks = careDriftRemainder / 10;
-    int playTicks = careDriftRemainder / 6;
-    int restlessTicks = careDriftRemainder / 8;
-    int anxietyTicks = (WiFi.status() != WL_CONNECTED && buddyHunger > 80) ? careDriftRemainder / 15 : 0;
+    int hungerTicks = careDriftRemainder / 90;
+    int playTicks = careDriftRemainder / 75;
+    int restlessTicks = careDriftRemainder / 120;
+    int anxietyTicks = (WiFi.status() != WL_CONNECTED && buddyHunger > 80) ? careDriftRemainder / 180 : 0;
     if (hungerTicks > 0 || playTicks > 0 || restlessTicks > 0 || anxietyTicks > 0) {
       buddyHunger = constrain(buddyHunger + hungerTicks, 0, 100);
       buddyPlayNeed = constrain(buddyPlayNeed + playTicks, 0, 100);
       buddyRestless = constrain(buddyRestless + restlessTicks, 0, 100);
       buddyAnxiety = constrain(buddyAnxiety + anxietyTicks, 0, 100);
-      int consumed = max(max(hungerTicks * 10, playTicks * 6), max(restlessTicks * 8, anxietyTicks * 15));
+      int consumed = max(max(hungerTicks * 90, playTicks * 75), max(restlessTicks * 120, anxietyTicks * 180));
       careDriftRemainder = max(0, careDriftRemainder - consumed);
       learnCurrentContext(min(2, max(1, hungerTicks + playTicks + restlessTicks)));
       buddyMemoryDirty = true;
