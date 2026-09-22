@@ -160,6 +160,7 @@ bool hurtRightEye = false;
 unsigned long tickleUntil = 0;
 unsigned long lastInteractionMs = 0;
 unsigned long lastIdleMoodMs = 0;
+bool userHasInteracted = false;
 bool asleep = false;
 int bootMinuteOfDay = 0;
 unsigned long clockSetAtMs = 0;
@@ -205,6 +206,21 @@ bool wifiConnecting = false;
 bool wifiSetupPortalActive = false;
 String wifiSsid;
 String ollamaHost;
+String spac3Host;
+bool spac3TelemetryEnabled = true;
+bool spac3TelemetryOk = false;
+unsigned long lastSpac3PollMs = 0;
+unsigned long nextSpac3PollMs = 3500;
+unsigned long lastSpac3HeartbeatMs = 0;
+unsigned long lastSpac3QuietMs = 0;
+String spac3LastMood = "";
+String spac3LastFace = "";
+String spac3LastMessage = "";
+String spac3LastHost = "";
+int spac3LastAlert = 0;
+int spac3LastWifiCount = 0;
+float spac3LastCpuC = NAN;
+float spac3LastRam = NAN;
 float weatherLat = 0.0f;
 float weatherLon = 0.0f;
 bool weatherConfigured = false;
@@ -283,6 +299,7 @@ void setUnixBaseFromClock();
 void settleDeadTimeFromClock(bool force = false);
 void saveBuddyMemory(bool force = false);
 void refreshCalendarFromUnixEstimate(bool force = false);
+void updateSpac3Ghost();
 
 String lastEvent = "idle";
 String statusLine = "tap mood, hold rotate";
@@ -555,6 +572,14 @@ uint64_t unixFromCurrentClock() {
 void setUnixBaseFromClock() {
   unixBase = unixFromCurrentClock();
   unixBaseMs = millis();
+}
+
+void setClockFromUnix(uint64_t utcUnix) {
+  if (utcUnix < 1700000000ULL) return;
+  unixBase = utcUnix;
+  unixBaseMs = millis();
+  refreshCalendarFromUnixEstimate(true);
+  settleDeadTimeFromClock(true);
 }
 
 uint64_t currentUnixEstimate() {
@@ -1189,6 +1214,7 @@ void saveBuddyMemory(bool force) {
 }
 
 void markInteraction() {
+  userHasInteracted = true;
   buddyTouchCount++;
   buddyPlayNeed = max(0, buddyPlayNeed - 4);
   buddyRestless = max(0, buddyRestless - 2);
@@ -1382,6 +1408,8 @@ void loadNetworkSettings() {
   prefs.begin("network", false);
   wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid", "") : "";
   ollamaHost = prefs.isKey("ollama") ? prefs.getString("ollama", "http://127.0.0.1:11434") : "http://127.0.0.1:11434";
+  spac3Host = prefs.isKey("spac3") ? prefs.getString("spac3", "http://10.42.7.1:8766") : "http://10.42.7.1:8766";
+  spac3TelemetryEnabled = prefs.isKey("spac3on") ? prefs.getBool("spac3on", true) : true;
   weatherLat = prefs.isKey("lat") ? prefs.getFloat("lat", 0.0f) : 0.0f;
   weatherLon = prefs.isKey("lon") ? prefs.getFloat("lon", 0.0f) : 0.0f;
   prefs.end();
@@ -1633,6 +1661,25 @@ void saveOllamaHost(const String& host) {
   prefs.end();
 }
 
+void saveSpac3Host(const String& host) {
+  spac3Host = host;
+  spac3Host.trim();
+  if (spac3Host.length() == 0) spac3Host = "http://10.42.7.1:8766";
+  if (!spac3Host.startsWith("http://") && !spac3Host.startsWith("https://")) {
+    spac3Host = "http://" + spac3Host;
+  }
+  prefs.begin("network", false);
+  prefs.putString("spac3", spac3Host);
+  prefs.end();
+}
+
+void saveSpac3Enabled(bool enabled) {
+  spac3TelemetryEnabled = enabled;
+  prefs.begin("network", false);
+  prefs.putBool("spac3on", spac3TelemetryEnabled);
+  prefs.end();
+}
+
 void saveWeatherLocation(float lat, float lon) {
   weatherLat = lat;
   weatherLon = lon;
@@ -1714,6 +1761,110 @@ int jsonInt(const String& body, const char* key, int fallback = -1) {
   return (int)value;
 }
 
+String jsonStringAfter(const String& body, const char* marker, const char* key, const String& fallback = "") {
+  int start = 0;
+  if (marker && strlen(marker) > 0) {
+    start = body.indexOf(marker);
+    if (start < 0) start = 0;
+  }
+  String pattern = String("\"") + key + "\":";
+  int at = body.indexOf(pattern, start);
+  if (at < 0) return fallback;
+  at += pattern.length();
+  while (at < body.length() && (body[at] == ' ' || body[at] == '\t')) at++;
+  if (at >= body.length() || body[at] != '"') return fallback;
+  at++;
+  String out;
+  bool esc = false;
+  for (int i = at; i < body.length(); i++) {
+    char c = body[i];
+    if (esc) {
+      if (c == 'n') out += ' ';
+      else if (c == 'r' || c == 't') out += ' ';
+      else out += c;
+      esc = false;
+    } else if (c == '\\') {
+      esc = true;
+    } else if (c == '"') {
+      break;
+    } else {
+      out += c;
+    }
+    if (out.length() > 180) break;
+  }
+  out.trim();
+  return out.length() ? out : fallback;
+}
+
+String jsonStringValue(const String& body, const char* key, const String& fallback = "") {
+  return jsonStringAfter(body, "", key, fallback);
+}
+
+Mood moodFromSpac3(String mood, float cpuC, int alertScore) {
+  mood.trim();
+  mood.toLowerCase();
+  if (alertScore >= 75 || mood == "hot") return MOOD_ANGRY;
+  if (alertScore >= 35 || mood == "alert") return MOOD_SURPRISED;
+  if (mood == "warm" || mood == "sunbaked") return MOOD_EXCITED;
+  if (mood == "lonely" || mood == "sad" || mood == "rainwatch") return MOOD_SAD;
+  if (mood == "night" || mood == "snowghost" || mood == "fogghost") return MOOD_SLEEPY;
+  if (mood == "watching" || mood == "cloaked" || mood == "scanning") return MOOD_SUSPICIOUS;
+  if (mood == "soundwave" || mood == "stormwatch" || mood == "windwatch") return MOOD_SURPRISED;
+  if (mood == "morning" || mood == "daylight" || mood == "skyclear") return MOOD_HAPPY;
+  if (isnan(cpuC)) return MOOD_NORMAL;
+  if (cpuC >= 75.0f) return MOOD_ANGRY;
+  if (cpuC >= 65.0f) return MOOD_EXCITED;
+  return MOOD_NORMAL;
+}
+
+bool spac3MessageHasAny(String message, const char* const* words, int count) {
+  message.toLowerCase();
+  for (int i = 0; i < count; i++) {
+    if (message.indexOf(words[i]) >= 0) return true;
+  }
+  return false;
+}
+
+bool spac3TelemetryShouldWake(String mood, String message, float cpuC, int alertScore) {
+  mood.trim();
+  mood.toLowerCase();
+  if (alertScore >= 35) return true;
+  if (!isnan(cpuC) && cpuC >= 65.0f) return true;
+  if (mood == "hot" || mood == "alert" || mood == "watching" || mood == "scanning" ||
+      mood == "soundwave" || mood == "stormwatch" || mood == "windwatch") {
+    return true;
+  }
+  const char* const activeWords[] = {
+    "motion", "person", "face", "capture", "camera", "microphone", "sound",
+    "voice", "handshake", "new device", "service down", "offline", "failed",
+    "critical", "warning", "intruder", "unknown", "connected"
+  };
+  return spac3MessageHasAny(message, activeWords, COUNT_OF(activeWords));
+}
+
+bool spac3TelemetryIsPassive(String mood, String message, float cpuC, int alertScore) {
+  if (spac3TelemetryShouldWake(mood, message, cpuC, alertScore)) return false;
+  mood.trim();
+  mood.toLowerCase();
+  if (mood == "night" || mood == "curious" || mood == "daylight" || mood == "morning" ||
+      mood == "skyclear" || mood == "rainwatch" || mood == "snowghost" || mood == "fogghost" ||
+      mood == "lonely" || mood == "sad") {
+    return true;
+  }
+  const char* const passiveWords[] = {
+    "gps has no fix", "gps", "room lux", "weather", "normal watch",
+    "quiet", "idle", "no fix", "still", "nothing"
+  };
+  return spac3MessageHasAny(message, passiveWords, COUNT_OF(passiveWords));
+}
+
+String spac3Url(const char* path) {
+  String base = spac3Host;
+  base.trim();
+  if (base.endsWith("/")) base.remove(base.length() - 1);
+  return base + path;
+}
+
 String weatherCodeName(int code) {
   if (code == 0) return "clear";
   if (code == 1 || code == 2) return "mostly clear";
@@ -1787,6 +1938,147 @@ bool updateWeatherNow(bool announce = true) {
     speechScroll = 0;
   }
   return true;
+}
+
+String jsonEscape(String value) {
+  value.replace("\\", "\\\\");
+  value.replace("\"", "\\\"");
+  value.replace("\n", " ");
+  value.replace("\r", " ");
+  return value;
+}
+
+void applySpac3Telemetry(const String& body) {
+  String mood = jsonStringAfter(body, "\"dock_label\"", "mood", "curious");
+  String face = jsonStringAfter(body, "\"dock_label\"", "face", "");
+  String message = jsonStringAfter(body, "\"dock_label\"", "message", "");
+  if (message.length() == 0) message = jsonStringAfter(body, "\"dock_label\"", "thought", "");
+  String host = jsonStringValue(body, "host", "hack-safe");
+  String alertLevel = jsonStringAfter(body, "\"alert\"", "level", "GREEN");
+  float cpuC = jsonNumber(body, "cpu_temp_c", NAN);
+  float ramPercent = jsonNumber(body, "percent", NAN);
+  int wifiCount = jsonInt(body, "networks", -1);
+  int alertScore = jsonInt(body, "score", 0);
+  int nextPoll = jsonInt(body, "next_poll_ms", 2500);
+  int telemetryUnix = jsonInt(body, "time", -1);
+
+  spac3TelemetryOk = true;
+  spac3LastMood = mood;
+  spac3LastFace = face;
+  spac3LastMessage = message;
+  spac3LastHost = host;
+  spac3LastAlert = alertScore;
+  spac3LastWifiCount = wifiCount;
+  spac3LastCpuC = cpuC;
+  spac3LastRam = ramPercent;
+  nextSpac3PollMs = constrain(nextPoll, 1800, 15000);
+  if (telemetryUnix > 1700000000) setClockFromUnix((uint64_t)telemetryUnix);
+
+  unsigned long now = millis();
+  bool restHours = timeIsLateNight() || timeIsEarlyAM();
+  bool recentlyTouched = userHasInteracted && now - lastInteractionMs < 15UL * 60UL * 1000UL;
+  bool shouldWake = spac3TelemetryShouldWake(mood, message, cpuC, alertScore);
+  bool passive = spac3TelemetryIsPassive(mood, message, cpuC, alertScore);
+  if (restHours && passive && !recentlyTouched && !shouldWake) {
+    currentMood = MOOD_SLEEPY;
+    asleep = timeIsLateNight();
+    lastEvent = "spac3 quiet " + mood;
+    statusLine = timeIsEarlyAM() ? "spac3 waking slow" : "spac3 quiet sleep";
+    nextSpac3PollMs = max(nextSpac3PollMs, 10000UL);
+    if (now - lastSpac3QuietMs > 60000UL || speechLine.length() == 0) {
+      speechLine = timeIsEarlyAM() ? "Spac3 is quiet. I am barely waking up." : "Spac3 is quiet. I am sleeping.";
+      speechScroll = 0;
+      lastSpac3QuietMs = now;
+    }
+    return;
+  }
+
+  currentMood = moodFromSpac3(mood, cpuC, alertScore);
+  if (shouldWake) asleep = false;
+  lastEvent = "spac3 " + mood;
+  statusLine = "spac3 " + alertLevel + " " + mood;
+  lastMoodAuto = now;
+  manualMoodHoldUntil = now + (shouldWake ? 12000UL : 3000UL);
+  if (message.length() > 0) {
+    speechLine = message;
+  } else if (!isnan(cpuC)) {
+    speechLine = "Spac3-Gh0st: " + host + " CPU " + String(cpuC, 1) + "C.";
+  } else {
+    speechLine = "Spac3-Gh0st telemetry linked.";
+  }
+  if (speechLine.length() > 180) speechLine = speechLine.substring(0, 180);
+  speechScroll = 0;
+
+  if (!isnan(cpuC) && cpuC >= 65.0f) {
+    buddyAnxiety = constrain(buddyAnxiety + 1, 0, 100);
+  }
+  if (alertScore >= 35) {
+    buddyRestless = constrain(buddyRestless + 1, 0, 100);
+  }
+  if (wifiCount > 0) {
+    learnActivityPreference(7, 1);
+  }
+  if (message.indexOf("GPS") >= 0 || message.indexOf("gps") >= 0) {
+    rememberBuddyThought("Spac3-Gh0st is thinking about GPS.");
+  }
+}
+
+bool fetchSpac3Telemetry(bool announceFailure = false) {
+  if (!spac3TelemetryEnabled || WiFi.status() != WL_CONNECTED) return false;
+  HTTPClient http;
+  String url = spac3Url("/api/cyd/telemetry");
+  http.setTimeout(3200);
+  if (!http.begin(url)) {
+    if (announceFailure) speechLine = "Spac3 telemetry request could not start.";
+    return false;
+  }
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    http.end();
+    spac3TelemetryOk = false;
+    statusLine = "spac3 http " + String(code);
+    if (announceFailure) {
+      speechLine = "Spac3-Gh0st did not answer telemetry.";
+      speechScroll = 0;
+    }
+    return false;
+  }
+  String body = http.getString();
+  http.end();
+  applySpac3Telemetry(body);
+  return true;
+}
+
+bool sendSpac3Heartbeat() {
+  if (!spac3TelemetryEnabled || WiFi.status() != WL_CONNECTED) return false;
+  HTTPClient http;
+  String url = spac3Url("/api/cyd/heartbeat");
+  http.setTimeout(2500);
+  if (!http.begin(url)) return false;
+  http.addHeader("Content-Type", "application/json");
+  String body = "{";
+  body += "\"name\":\"" + jsonEscape(buddyName) + "\",";
+  body += "\"firmware\":\"CYD-Buddy-Eyes\",";
+  body += "\"face\":\"" + jsonEscape(spac3LastFace.length() ? spac3LastFace : String("cyd-eyes")) + "\",";
+  body += "\"mood\":\"" + jsonEscape(String(moodNames[currentMood])) + "\",";
+  body += "\"message\":\"" + jsonEscape(speechLine) + "\"";
+  body += "}";
+  int code = http.POST(body);
+  http.end();
+  return code >= 200 && code < 300;
+}
+
+void updateSpac3Ghost() {
+  if (!spac3TelemetryEnabled || WiFi.status() != WL_CONNECTED || wifiConnecting) return;
+  unsigned long now = millis();
+  if (now - lastSpac3PollMs >= nextSpac3PollMs) {
+    lastSpac3PollMs = now;
+    fetchSpac3Telemetry(false);
+  }
+  if (now - lastSpac3HeartbeatMs >= 15000UL) {
+    lastSpac3HeartbeatMs = now;
+    sendSpac3Heartbeat();
+  }
 }
 
 void connectWifi() {
@@ -3990,6 +4282,14 @@ void handleSerialLine(String line) {
     markInteraction();
     startBlink(false);
     speechScroll = 0;
+  } else if (lower == "sleep" || lower == "nap") {
+    currentMood = MOOD_SLEEPY;
+    speechLine = "Sleeping. Wake me if something actually happens.";
+    statusLine = "asleep";
+    asleep = true;
+    manualMoodHoldUntil = millis() + 10UL * 60UL * 1000UL;
+    speechScroll = 0;
+    Serial.println("sleep=ok");
   } else if (lower.startsWith("poke")) {
     bool left = lower.indexOf("right") < 0;
     bool right = lower.indexOf("left") < 0;
@@ -4259,7 +4559,7 @@ void handleSerialLine(String line) {
     menuMode = MENU_NONE;
     statusLine = "menu closed";
   } else if (lower == "diag" || lower == "diagnostics") {
-    Serial.printf("diag frame=%s size=%dx%d rotation=%d mood=%s mode=%s menu=%d overlays wifi=%s time=%s schedule=%s stats=%s touchcal=%s heap=%u sd=%s phrase_sd=%s wifi=%s ssid_saved=%s weather=%s name=%s personality=%s scroll=%lums health=%s strength=%d armor=%d\n",
+    Serial.printf("diag frame=%s size=%dx%d rotation=%d mood=%s mode=%s menu=%d overlays wifi=%s time=%s schedule=%s stats=%s touchcal=%s heap=%u sd=%s phrase_sd=%s wifi=%s ssid_saved=%s weather=%s spac3=%s spac3_ok=%s name=%s personality=%s scroll=%lums health=%s strength=%d armor=%d\n",
                   frameOk ? "ok" : "failed",
                   screenW,
                   screenH,
@@ -4278,6 +4578,8 @@ void handleSerialLine(String line) {
                   WiFi.status() == WL_CONNECTED ? "connected" : "offline",
                   wifiConfigured ? "true" : "false",
                   weatherSummary.c_str(),
+                  spac3TelemetryEnabled ? "on" : "off",
+                  spac3TelemetryOk ? "true" : "false",
                   buddyName.c_str(),
                   personalityNames[currentPersonality],
                   speechScrollMs,
@@ -4328,7 +4630,7 @@ void handleSerialLine(String line) {
     loadNetworkSettings();
     String savedPass = loadWifiPassword();
     wl_status_t wifiStatus = WiFi.status();
-    Serial.printf("wifi status=%s code=%d ssid_saved=%s saved_ssid=\"%s\" pass_len=%d ip=%s rssi=%d channel=%d ollama=%s\n",
+    Serial.printf("wifi status=%s code=%d ssid_saved=%s saved_ssid=\"%s\" pass_len=%d ip=%s rssi=%d channel=%d ollama=%s spac3=%s\n",
                   wifiStatusName(wifiStatus),
                   (int)wifiStatus,
                   wifiConfigured ? "true" : "false",
@@ -4337,7 +4639,8 @@ void handleSerialLine(String line) {
                   wifiStatus == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "0.0.0.0",
                   wifiStatus == WL_CONNECTED ? WiFi.RSSI() : 0,
                   wifiStatus == WL_CONNECTED ? WiFi.channel() : 0,
-                  ollamaHost.c_str());
+                  ollamaHost.c_str(),
+                  spac3Host.c_str());
   } else if (lower == "time sync") {
     syncNetworkTime();
     Serial.printf("time_sync minute=%d wifi=%s\n", minuteOfDay(), WiFi.status() == WL_CONNECTED ? "connected" : "offline");
@@ -4367,6 +4670,48 @@ void handleSerialLine(String line) {
   } else if (lower.startsWith("ollama host ")) {
     saveOllamaHost(line.substring(12));
     Serial.printf("ollama_host=saved %s\n", ollamaHost.c_str());
+  } else if (lower.startsWith("spac3 host ")) {
+    saveSpac3Host(line.substring(11));
+    Serial.printf("spac3_host=saved %s\n", spac3Host.c_str());
+    speechLine = "Spac3-Gh0st host saved.";
+    speechScroll = 0;
+  } else if (lower == "spac3 on" || lower == "spac3 enable") {
+    saveSpac3Enabled(true);
+    Serial.println("spac3=on");
+    speechLine = "Spac3-Gh0st telemetry enabled.";
+    speechScroll = 0;
+  } else if (lower == "spac3 off" || lower == "spac3 disable") {
+    saveSpac3Enabled(false);
+    spac3TelemetryOk = false;
+    Serial.println("spac3=off");
+    speechLine = "Spac3-Gh0st telemetry paused.";
+    speechScroll = 0;
+  } else if (lower == "spac3 update" || lower == "spac3 poll") {
+    bool ok = fetchSpac3Telemetry(true);
+    Serial.printf("spac3_update=%s host=%s mood=%s cpu_c=%.1f ram=%.1f alert=%d wifi_count=%d message=\"%s\"\n",
+                  ok ? "ok" : "failed",
+                  spac3Host.c_str(),
+                  spac3LastMood.c_str(),
+                  spac3LastCpuC,
+                  spac3LastRam,
+                  spac3LastAlert,
+                  spac3LastWifiCount,
+                  spac3LastMessage.c_str());
+  } else if (lower == "spac3 heartbeat") {
+    bool ok = sendSpac3Heartbeat();
+    Serial.printf("spac3_heartbeat=%s host=%s\n", ok ? "ok" : "failed", spac3Host.c_str());
+  } else if (lower == "spac3 status") {
+    Serial.printf("spac3 enabled=%s ok=%s host=%s mood=%s face=\"%s\" cpu_c=%.1f ram=%.1f alert=%d wifi_count=%d message=\"%s\"\n",
+                  spac3TelemetryEnabled ? "true" : "false",
+                  spac3TelemetryOk ? "true" : "false",
+                  spac3Host.c_str(),
+                  spac3LastMood.c_str(),
+                  spac3LastFace.c_str(),
+                  spac3LastCpuC,
+                  spac3LastRam,
+                  spac3LastAlert,
+                  spac3LastWifiCount,
+                  spac3LastMessage.c_str());
   } else if (lower.startsWith("remember me as ")) {
     saveBuddyName(line.substring(15));
     speechLine = "Got it. I will call you " + buddyName + ".";
@@ -4888,13 +5233,14 @@ void setup() {
 
   Serial.printf("CYD Buddy Eyes booted, frame=%s rotation=%d size=%dx%d\n", frameOk ? "ok" : "failed", displayRotation, screenW, screenH);
   printSDStatus();
-  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, feed, play, boost, calm, care reset, health, preferences, memory add <note>, memory think, preference seed, prefer season summer, prefer month october, prefer time night, prefer activity playing, dislike season winter, bt seen <name>, date YYYY-MM-DD, time HH:MM, timezone -5, dst on|off, clock 12|24, schedule <early|morning|day|latepm|night|latenight> HH:MM, lifecycle, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, personality <name|next>, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi setup, wifi ssid <name>, wifi pass <password>, wifi connect, wifi scan, wifi status, weather loc <lat> <lon>, weather update, weather status, ollama host <url>, remember me as <name>, phrase add <mood> <phrase>, phrase expand");
+  Serial.println("commands: rotate [0-3], mood happy, event face, stats cpu=90 temp=80, tap, boop, pet, tickle, poke left, wake, feed, play, boost, calm, care reset, health, preferences, memory add <note>, memory think, preference seed, prefer season summer, prefer month october, prefer time night, prefer activity playing, dislike season winter, bt seen <name>, date YYYY-MM-DD, time HH:MM, timezone -5, dst on|off, clock 12|24, schedule <early|morning|day|latepm|night|latenight> HH:MM, lifecycle, time sync, memory, blink, wink, auto, manual, speak, say <text>, name <buddy>, personality <name|next>, scroll speed <fast|normal|slow|ms>, eye color <name|default>, pupil color <name|default>, sd status, wifi setup, wifi ssid <name>, wifi pass <password>, wifi connect, wifi scan, wifi status, weather loc <lat> <lon>, weather update, weather status, ollama host <url>, spac3 host <url>, spac3 update, spac3 status, spac3 on|off, remember me as <name>, phrase add <mood> <phrase>, phrase expand");
   if (wifiConfigured) connectWifi();
 }
 
 void loop() {
   processSerial();
   updateWifi();
+  updateSpac3Ghost();
   handleTouch();
   unsigned long now = millis();
   if (now - lastFrameDrawMs >= FRAME_INTERVAL_MS) {

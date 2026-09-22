@@ -15,6 +15,7 @@ Thumbs.db
 Desktop.ini
 
 # Local reference clones and experiments
+_refs/
 Deskbuddy-src/
 Edison-DeskBuddy-src/
 

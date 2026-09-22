@@ -36,7 +36,7 @@ What remains:
 - Menus: system menu, face menu, on-screen Wi-Fi setup, AI/personality settings, phrase bank, mood/eye/color controls.
 - Time/date/weather: Wi-Fi can sync time and fetch current weather from Open-Meteo after latitude/longitude are saved.
 - SD phrase bank: built-in phrases plus optional `/cydbuddy/phrases.csv`.
-- Wi-Fi setup: save SSID/password locally, connect, sync time, save an Ollama host URL.
+- Wi-Fi setup: save SSID/password locally, connect, sync time, save an Ollama host URL, and dock to Spac3-Gh0st telemetry.
 - Serial bridge surface: `say`, `event`, `stats`, and settings commands still work for a PC, phone, or future network bridge.
 
 What is not onboard:
@@ -143,6 +143,12 @@ weather loc <latitude> <longitude>
 weather update
 weather status
 ollama host <url>
+spac3 host <url>
+spac3 update
+spac3 heartbeat
+spac3 status
+spac3 on
+spac3 off
 remember me as <name>
 ```
 
@@ -242,6 +248,31 @@ The clean split is:
 - External host when available: speech-to-text, LLM/Ollama/OpenAI, weather, online info, and longer memory.
 
 Offline, the CYD remains a self-contained animated buddy with touch-driven personality and SD-backed phrases.
+
+## Spac3-Gh0st Dock
+
+CYD can dock to Hack-Safe v2 / Spac3-Gh0st over its `Wu-Tang LAN` hotspot. The firmware defaults to:
+
+```text
+http://10.42.7.1:8766
+```
+
+When Wi-Fi is connected and Spac3 telemetry is enabled, CYD polls `/api/cyd/telemetry`, posts a heartbeat to `/api/cyd/heartbeat`, and maps Spac3-Gh0st mood/thought/alert/system fields into the CYD face and bottom speech strip. CYD also accepts the telemetry `time` value as a backup clock source when NTP is unavailable on the hotspot.
+
+Passive late-night telemetry, such as low room light, normal watch, GPS no-fix notes, and quiet weather updates, is stored for status but does not keep Buddy awake. Urgent alerts, hot CPU, camera/audio/motion/device/security events, or direct touch/serial wake events can still wake him.
+
+Useful serial commands:
+
+```text
+spac3 status
+spac3 update
+spac3 heartbeat
+spac3 host http://10.42.7.1:8766
+spac3 off
+spac3 on
+```
+
+Wi-Fi passwords are saved only in ESP32 preferences on the CYD, not in this repo.
 
 ## Weather And Time
 
