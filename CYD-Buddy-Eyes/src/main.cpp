@@ -129,6 +129,8 @@ unsigned long lastSaccade = 0;
 unsigned long nextSaccadeMs = 900;
 unsigned long lastMoodAuto = 0;
 unsigned long nextAutonomyMs = 0;
+unsigned long nextChatterMs = 0;
+unsigned long lastChatterMs = 0;
 unsigned long manualMoodHoldUntil = 0;
 unsigned long lastTouchMs = 0;
 unsigned long touchStarted = 0;
@@ -305,10 +307,12 @@ void updateSpac3Ghost();
 String monthName(int month);
 String calendarContextLine();
 bool syncTimeFromSpac3();
+void startBlink(bool wink = false, bool left = false);
 
 String lastEvent = "idle";
 String statusLine = "tap mood, hold rotate";
 String speechLine = "";
+String lastAutoSpeechLine = "";
 int speechScroll = 0;
 unsigned long lastSpeechScroll = 0;
 unsigned long speechScrollMs = 140;
@@ -2176,6 +2180,18 @@ void applySpac3Telemetry(const String& body) {
   bool passive = spac3TelemetryIsPassive(mood, message, cpuC, alertScore);
   bool hasEvent = message.length() > 0 || eventKind.length() > 0 ||
                   (alertScore >= 35 && alertScore > previousAlert + 5);
+  if (!hasEvent && passive && !shouldWake) {
+    lastEvent = "spac3 linked " + mood;
+    statusLine = "spac3 " + alertLevel + " linked";
+    nextSpac3PollMs = max(nextSpac3PollMs, 6000UL);
+    if (!isnan(cpuC) && cpuC >= 65.0f) {
+      buddyAnxiety = constrain(buddyAnxiety + 1, 0, 100);
+    }
+    if (wifiCount > 0) {
+      learnActivityPreference(7, 1);
+    }
+    return;
+  }
   if (restHours && passive && !recentlyTouched && !shouldWake) {
     currentMood = MOOD_SLEEPY;
     asleep = timeIsLateNight();
@@ -2846,6 +2862,18 @@ String phraseFromList(const char* const* phrases, int count) {
   return String(phrases[random(0, count)]);
 }
 
+void setSpeechLine(String text, const char* status = nullptr) {
+  text.trim();
+  if (text.length() == 0) return;
+  if (text == speechLine && text.length() > 8) {
+    text += " ...still true, unfortunately.";
+  }
+  speechLine = text;
+  speechScroll = 0;
+  lastChatterMs = millis();
+  if (status) statusLine = status;
+}
+
 const char* const POKE_PHRASES[] = {
   "Ow. That was my eye.",
   "Hey. I use those for dramatic staring.",
@@ -2990,10 +3018,59 @@ String randomPhraseForMood(Mood mood) {
 }
 
 void speakMoodPhrase(Mood mood) {
-  if (random(0, 100) < 22) speechLine = randomMemoryLine();
-  else speechLine = randomPhraseForMood(mood);
-  speechScroll = 0;
-  statusLine = "speaking";
+  String next = "";
+  for (int attempt = 0; attempt < 4; attempt++) {
+    if (random(0, 100) < 22) next = randomMemoryLine();
+    else next = randomPhraseForMood(mood);
+    if (next != lastAutoSpeechLine || attempt == 3) break;
+  }
+  lastAutoSpeechLine = next;
+  setSpeechLine(next, "speaking");
+}
+
+Mood livelyMoodChoice(unsigned long idleMs) {
+  if (buddyHealthTenth < 180 && random(0, 100) < 25) return random(0, 2) ? MOOD_SAD : MOOD_ANGRY;
+  if (buddyHunger > 90 && random(0, 100) < 35) return MOOD_ANGRY;
+  if (buddyPlayNeed > 80 && random(0, 100) < 45) return MOOD_RESTLESS;
+  if (buddyAnxiety > 70 && random(0, 100) < 40) return MOOD_ANXIOUS;
+  if (idleMs > 240000UL && random(0, 100) < 35) return MOOD_BORED;
+  int roll = random(0, 100);
+  if (roll < 18) return MOOD_HAPPY;
+  if (roll < 31) return MOOD_NORMAL;
+  if (roll < 43) return MOOD_EXCITED;
+  if (roll < 53) return MOOD_SUSPICIOUS;
+  if (roll < 61) return MOOD_LOVE;
+  if (roll < 69) return MOOD_SURPRISED;
+  if (roll < 76) return MOOD_RESTLESS;
+  if (roll < 83) return MOOD_BORED;
+  if (roll < 89) return MOOD_HIPPY;
+  if (roll < 95) return MOOD_STONER;
+  return MOOD_DRUNK;
+}
+
+void livelyChatter(unsigned long idleMs) {
+  if (!autoMode || menuMode != MENU_NONE) return;
+  if (wifiEditorActive || timeEditorActive || scheduleEditorActive || statsViewActive || touchCalActive) return;
+  unsigned long now = millis();
+  if (nextChatterMs == 0) nextChatterMs = now + random(5000, 12000);
+  if (now < nextChatterMs) return;
+
+  bool shouldWakeToTalk = asleep && !timeIsLateNight() && idleMs < 900000UL;
+  if (asleep && !shouldWakeToTalk) {
+    nextChatterMs = now + random(60000, 120000);
+    return;
+  }
+  if (shouldWakeToTalk) asleep = false;
+
+  Mood nextMood = livelyMoodChoice(idleMs);
+  currentMood = nextMood;
+  lastMoodAuto = now;
+  speakMoodPhrase(currentMood);
+  statusLine = String("chatter: ") + moodNames[currentMood];
+  if (random(0, 100) < 25) startBlink(false);
+  targetGazeX = random(-16, 17);
+  targetGazeY = random(-10, 11);
+  nextChatterMs = now + (idleMs > 180000UL ? random(9000, 22000) : random(14000, 32000));
 }
 
 void printSDStatus() {
@@ -3006,7 +3083,7 @@ void printSDStatus() {
   }
 }
 
-void startBlink(bool wink = false, bool left = false) {
+void startBlink(bool wink, bool left) {
   blinkActive = true;
   winkActive = wink;
   winkLeft = left;
@@ -3436,7 +3513,7 @@ void updateBuddy() {
     }
   }
 
-  if (quietAuto && ((timeIsLateNight() && idleMs > 300000UL) || idleMs > 600000UL)) {
+  if (quietAuto && ((timeIsLateNight() && idleMs > 900000UL) || idleMs > 1800000UL)) {
     if (!asleep) {
       buddyBoredCount++;
       currentMood = MOOD_SLEEPY;
@@ -3448,7 +3525,7 @@ void updateBuddy() {
     }
     targetGazeX = 0;
     targetGazeY = 8;
-  } else if (quietAuto && idleMs > 300000UL) {
+  } else if (quietAuto && idleMs > 600000UL) {
     if (currentMood != MOOD_SLEEPY || now - lastIdleMoodMs > 60000UL) {
       currentMood = MOOD_SLEEPY;
       statusLine = "sleepy";
@@ -3456,7 +3533,7 @@ void updateBuddy() {
       speechScroll = 0;
       lastIdleMoodMs = now;
     }
-  } else if (quietAuto && idleMs > 120000UL) {
+  } else if (quietAuto && idleMs > 180000UL) {
     if (now - lastIdleMoodMs > 60000UL) {
       buddyBoredCount++;
       if (buddyHealthTenth < 250) currentMood = MOOD_SAD;
@@ -3487,6 +3564,8 @@ void updateBuddy() {
     gazeY += cosf(breath * 3.1f) * 1.2f;
   }
 
+  livelyChatter(idleMs);
+
   if (autoMoodAllowed && now >= nextAutonomyMs && menuMode == MENU_NONE && !overlayActive && !asleep && idleMs < 600000UL) {
     int roll = random(0, 100);
     int currentSeason = currentSeasonIndex();
@@ -3514,7 +3593,7 @@ void updateBuddy() {
       statusLine = String("auto: ") + moodNames[currentMood];
     }
     speakMoodPhrase(currentMood);
-    nextAutonomyMs = now + random(18000, 48000);
+    nextAutonomyMs = now + random(12000, 28000);
   }
 
   chooseMoodTargets();
@@ -4522,6 +4601,12 @@ void handleSerialLine(String line) {
     setAutoMode(false);
   } else if (lower == "speak") {
     speakMoodPhrase(currentMood);
+    Serial.printf("speech mood=%s text=\"%s\"\n", moodNames[currentMood], speechLine.c_str());
+  } else if (lower == "lively" || lower == "talk more") {
+    asleep = false;
+    nextChatterMs = 1;
+    livelyChatter(millis() - lastInteractionMs);
+    Serial.printf("lively mood=%s next_chatter_ms=%lu text=\"%s\"\n", moodNames[currentMood], nextChatterMs, speechLine.c_str());
   } else if (lower == "tap") {
     if (autoMode) handleAutoTap();
     else {
